@@ -36,7 +36,8 @@ for i 0 N
   hs[i] = a
 
 sel = 0
-hz = 4
+hz = 8
+since = 0
 best = load(0)
 a_was = 0
 b_was = 0
@@ -78,6 +79,9 @@ heart 1 == 1
   num(170, 26, w / 1000, 15)
   if w > best
     best = w
+  since = since + 1
+  if since >= 600
+    since = 0
     save(0, best)
   text(230, 26, "BEST", 7)
   num(264, 26, best / 1000, 6)
@@ -97,5 +101,5 @@ heart 1 == 1
     if a[H - 1] < a[0]
       col = 12
     plot(a, H, 130, y, 180, 26, col)
-  text(8, 190, "A BUY  B SELL  UP DOWN SPEED", 7)
+  text(8, 190, "A BUY  S SELL  UP DOWN SPEED", 7)
   frame()
