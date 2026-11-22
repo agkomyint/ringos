@@ -82,6 +82,37 @@ scope                   arrays made inside the indented block are freed when it 
 | `tiles(map, map_w, sheet, tile, scroll_x, scroll_y)` | draw a scrolling tile map. `map` is a `bytes` array of tile numbers (`map_w` per row); `sheet` is a `bytes` array holding the tiles one after another, each `tile` x `tile` characters like a sprite |
 | `palette(c, r, g, b)` | redefine colour `c` (0-255) with r, g, b each 0-255 (fades, flashes). Reset when the game ends |
 | `shake(n)` | jolt the next shown frame by up to `n` pixels (max 16) |
+| `fmul(a, b)` / `fdiv(a, b)` | fixed point (x1000) multiply / divide, 128-bit inside so it does not overflow (`fdiv` by 0 gives 0) |
+| `sqrt(n)` / `fsqrt(x)` | whole / fixed point square root |
+| `pow(a, b)` | `a` to the whole power `b` (saturates instead of wrapping) |
+| `pct(n, p)` | `p` percent of `n` |
+| `lerp(a, b, t)` | `a + (b-a)*t/1000`, `t` from 0 to 1000 |
+| `sum(a, n)` `top(a, n)` `low(a, n)` | total / biggest / smallest of the first `n` cells of array `a` |
+| `sort(a, n)` / `fill(a, n, v)` | sort the first `n` cells / set them all to `v` |
+| `rndn(mean, sd)` | bell-curve random number (sum of 12 uniform draws), `sd` in the same units as `mean` |
+| `seed(n)` | restart the random numbers: the same `n` gives the same sequence |
+| `tick(hz)` | how many simulation steps are due (0..10) for a clock of `hz` steps a second; independent of the frame rate |
+| `plot(a, n, x, y, w, h, c)` / `bars(...)` | line / bar chart of the first `n` cells, scaled to fit the box |
+| `textx(x, y, "text", c, m)` | text `m` times bigger (1-8) |
+
+### Shared variables: `global`
+Functions only see their parameters. To share a variable with them, declare it at the top level
+**before the functions**, one name per line:
+
+    global price
+    global cash
+
+    buy n
+      cash = cash - n * price
+
+Globals live in the main program, so assigning them from a function changes them everywhere.
+
+### Fixed point
+Ring has whole numbers only. For money and rates, keep values times 1000 (`2500` means 2.5) and use
+`fmul`/`fdiv`. Show `v / 1000` for the whole part.
+
+### Saves
+There are now 32 save slots per game: `save(0..31, n)` / `load(0..31)`.
 
 Colours 0-255 (a 256-colour palette, one byte per pixel). 0-15: black, blue, green, cyan, red, magenta, brown, light gray, dark gray, light blue,
 light green, light cyan, light red, light magenta, yellow, white. 16-231 are a 6x6x6 colour cube (16 + 36*r + 6*g + b, each 0-5), 232-255 greys.

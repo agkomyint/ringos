@@ -37,14 +37,14 @@ struct Arcade<'a> {
     esc_at: u64,
     tone_off: u64, // tick when the current beep ends (0 = none)
     game: String,  // name of the running game (keys its saved numbers)
-    slots: [i64; 8],
+    slots: [i64; 32],
     writes_left: u32, // NVRAM writes this game may still make (flash wears out)
     dirty: bool,      // a saved value is waiting to be written
 }
 
 impl<'a> Arcade<'a> {
     fn new(s: &'a mut Screen) -> Arcade<'a> {
-        Arcade { s, next: 0, start: now_ms(), esc_at: 0, in_game: false, tone_off: 0, game: String::new(), slots: [0; 8], writes_left: 0, dirty: false }
+        Arcade { s, next: 0, start: now_ms(), esc_at: 0, in_game: false, tone_off: 0, game: String::new(), slots: [0; 32], writes_left: 0, dirty: false }
     }
 
     /// Draw text with the font enlarged by `mult` (menu titles).
@@ -175,7 +175,12 @@ impl<'a> Host for Arcade<'a> {
         // wait for the 60 Hz frame boundary, reading the keyboard as we go (a tap is never missed)
         poll();
         while now_ms() < self.next {
-            uefi::boot::stall(Duration::from_micros(300));
+            // plenty of time left: sleep until the firmware's next timer tick (<= 10 ms) instead of burning power
+            if self.next - now_ms() >= 11 {
+                crate::input::idle();
+            } else {
+                uefi::boot::stall(Duration::from_micros(300));
+            }
             poll();
         }
         self.next = now_ms() + 16;
@@ -221,6 +226,10 @@ impl<'a> Host for Arcade<'a> {
     fn sprite(&mut self, x: i64, y: i64, data: &[u8], w: i64, scale: i64) {
         self.s.sprite(x, y, data, w, scale);
     }
+    fn textx(&mut self, x: i64, y: i64, s: &[u8], c: i64, mult: i64) {
+        let t = String::from_utf8_lossy(s).into_owned();
+        self.text_big(x, y, &t, c, mult.clamp(1, 8) as usize);
+    }
     fn tiles(&mut self, map: &[u8], map_w: i64, sheet: &[u8], tile: i64, sx: i64, sy: i64) {
         self.s.tiles(map, map_w, sheet, tile, sx, sy);
     }
@@ -234,10 +243,10 @@ impl<'a> Host for Arcade<'a> {
         self.s.shake(((r >> 20) % span) as i64 - n, ((r >> 40) % span) as i64 - n);
     }
     fn load(&mut self, slot: i64) -> i64 {
-        self.slots[(slot & 7) as usize]
+        self.slots[(slot & 31) as usize]
     }
     fn save(&mut self, slot: i64, value: i64) {
-        let i = (slot & 7) as usize;
+        let i = (slot & 31) as usize;
         if self.slots[i] == value {
             return; // nothing changed: do not touch the flash
         }

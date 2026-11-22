@@ -110,6 +110,10 @@ impl Gen {
                 self.expr(e)?;
                 self.u16(op::STORE, *slot as u16);
             }
+            Stmt::GAssign(slot, e) => {
+                self.expr(e)?;
+                self.u16(op::GSTORE, *slot as u16);
+            }
             Stmt::If(c, then, other) => {
                 self.expr(c)?;
                 let jz = self.jump(op::JZ);
@@ -154,6 +158,7 @@ impl Gen {
         match e {
             Expr::Num(n) => self.push_i(*n),
             Expr::Var(slot) => self.u16(op::LOAD, *slot as u16),
+            Expr::GVar(slot) => self.u16(op::GLOAD, *slot as u16),
             Expr::Neg(x) => {
                 self.expr(x)?;
                 self.code.push(op::NEG);
@@ -214,6 +219,15 @@ impl Gen {
                 self.expr(&args[1])?;
                 self.expr(&args[3])?;
                 self.u16(op::TEXTLIT, i);
+            }
+            Expr::Intr(39, args) if matches!(args.get(2), Some(Expr::Lit(_))) => {
+                let Expr::Lit(t) = &args[2] else { unreachable!() };
+                let i = self.string(t)?;
+                self.expr(&args[0])?;
+                self.expr(&args[1])?;
+                self.expr(&args[3])?;
+                self.expr(&args[4])?;
+                self.u16(op::TEXTXLIT, i);
             }
             Expr::Intr(14, args) if matches!(args.get(2), Some(Expr::Lit(_))) => {
                 // sprite(x, y, "picture", w, scale): drawn straight from the string table, no array
@@ -375,6 +389,83 @@ mouth min(3,-4)
 mouth max(3,-4)
 mouth abs(-9)");
         assert_eq!(h.out, ["1", "0", "-4", "3", "9"]);
+    }
+
+    #[test]
+    fn globals_are_shared_with_functions() {
+        let h = run("global total
+total = 5
+bump a
+  total = total + a
+  back total
+
+peek
+  back total * 10
+
+mouth bump(2)
+mouth total
+mouth bump(3)
+mouth peek()");
+        assert_eq!(h.out, ["7", "7", "10", "100"]);
+    }
+
+    #[test]
+    fn fixed_point_and_array_maths() {
+        let h = run("mouth fmul(2500, 1500)
+mouth fdiv(3000, 2000)
+mouth fdiv(1, 0)
+mouth sqrt(144)
+mouth fsqrt(2000)
+mouth pow(3, 4)
+mouth pct(200, 15)
+mouth lerp(100, 200, 250)
+a = new 5
+a[0] = 4
+a[1] = 9
+a[2] = 1
+a[3] = 7
+a[4] = 3
+mouth sum(a, 5)
+mouth top(a, 5)
+mouth low(a, 5)
+sort(a, 5)
+mouth a[0]
+mouth a[4]
+fill(a, 5, 6)
+mouth sum(a, 5)");
+        assert_eq!(h.out, ["3750", "1500", "0", "12", "1414", "81", "30", "125", "24", "9", "1", "1", "9", "30"]);
+    }
+
+    #[test]
+    fn seed_repeats_and_rndn_is_bell_shaped() {
+        let h = run("seed(7)
+a = rnd(1000)
+seed(7)
+b = rnd(1000)
+mouth a == b
+n = 0
+t = 0
+for i 0 400
+  v = rndn(1000, 100)
+  t = t + v
+mouth t / 400");
+        assert_eq!(h.out[0], "1");
+        let mean: i64 = h.out[1].parse().unwrap();
+        assert!((950..=1050).contains(&mean), "mean {mean}");
+    }
+
+    #[test]
+    fn charts_and_big_text_draw() {
+        let h = run("a = new 4
+a[0] = 1
+a[1] = 5
+a[2] = 3
+a[3] = 8
+plot(a, 4, 10, 10, 40, 20, 7)
+bars(a, 4, 10, 40, 40, 20, 5)
+textx(0, 0, \"HI\", 3, 2)");
+        assert!(!h.rects.is_empty());
+        assert!(h.out.contains(&"HI".to_string()));
     }
 
     #[test]

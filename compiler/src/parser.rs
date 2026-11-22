@@ -14,6 +14,7 @@ use crate::lexer::Tok;
 pub enum Expr {
     Num(i64),
     Var(usize),                      // the variable in this slot
+    GVar(usize),                     // a `global` of the main program, seen from a function
     Neg(Box<Expr>),                  // -x
     Bin(char, Box<Expr>, Box<Expr>), // a + b, a * b, ...
     Call(usize, Vec<Expr>),          // add(1, 2)   (function number, arguments)
@@ -36,6 +37,7 @@ pub enum Stmt {
     Print(Expr),                    // mouth 1+2
     PrintStr(String),               // mouth "Hi"
     Assign(usize, Expr),            // x = 5   (slot, value)
+    GAssign(usize, Expr),           // the same for a global
     If(Expr, Vec<Stmt>, Vec<Stmt>), // if cond / then-block / else-block (maybe empty)
     While(Expr, Vec<Stmt>),         // heart cond / block   (repeat while cond is not 0)
     Return(Expr),                   // back x
@@ -71,7 +73,7 @@ fn power(op: char) -> u8 {
     }
 }
 
-const KEYWORDS: [&str; 12] = ["mouth", "if", "else", "heart", "back", "new", "bytes", "size", "free", "scope", "for", "const"];
+const KEYWORDS: [&str; 13] = ["mouth", "if", "else", "heart", "back", "new", "bytes", "size", "free", "scope", "for", "const", "global"];
 /// Words from older Ring versions (typed input, files, windows, network): refused with a clear message.
 const RETIRED: [&str; 21] = ["ear", "hear", "eye", "hand", "voice", "same", "join", "listen", "wait", "recv", "send", "close", "sendfile", "filesize", "window", "button", "label", "event", "settext", "edit", "gettext"];
 
@@ -85,11 +87,17 @@ struct Parser {
     in_func: bool,
     scopes: usize, // how many `scope` blocks we are inside (in the current function)
     consts: Vec<(String, i64)>, // `const NAME 5`: names that stand for a fixed number
+    globals: Vec<(String, usize)>, // `global x`: main-program variables that functions can use too
 }
 
 impl Parser {
     fn lookup(&self, name: &str) -> Option<usize> {
         self.visible.iter().rev().find(|(n, _)| n == name).map(|(_, s)| *s)
+    }
+
+    /// A variable by name: this function's own first, then the shared `global`s.
+    fn var(&self, name: &str) -> Option<Expr> {
+        self.lookup(name).map(Expr::Var).or_else(|| self.globals.iter().find(|(n, _)| n == name).map(|(_, s)| Expr::GVar(*s)))
     }
 
     fn peek(&self) -> &Tok {
@@ -163,7 +171,7 @@ impl Parser {
                 if let Some((_, v)) = self.consts.iter().find(|(n, _)| *n == name) {
                     return Ok(Expr::Num(*v));
                 }
-                let Some(slot) = self.lookup(&name) else {
+                let Some(base) = self.var(&name) else {
                     return Err(format!("'{name}' is not defined at {pos}"));
                 };
                 if *self.peek() == Tok::Sym('[') {
@@ -173,7 +181,7 @@ impl Parser {
                         return Err(format!("expected ']' at {}", self.pos()));
                     }
                     self.next();
-                    return Ok(Expr::Index(Box::new(Expr::Var(slot)), Box::new(i)));
+                    return Ok(Expr::Index(Box::new(base), Box::new(i)));
                 }
                 if *self.peek() == Tok::Sym('{') {
                     self.next();
@@ -182,9 +190,9 @@ impl Parser {
                         return Err(format!("expected '}}' at {}", self.pos()));
                     }
                     self.next();
-                    return Ok(Expr::BIndex(Box::new(Expr::Var(slot)), Box::new(i)));
+                    return Ok(Expr::BIndex(Box::new(base), Box::new(i)));
                 }
-                Ok(Expr::Var(slot))
+                Ok(base)
             }
             Tok::Sym('-') => {
                 self.next();
@@ -354,6 +362,31 @@ impl Parser {
                 all.push(Stmt::Eval(Expr::ScopeClose));
                 Ok(Stmt::If(Expr::Num(1), all, Vec::new()))
             }
+            Tok::Ident(w) if w == "global" => {
+                // global name   (top level, before the functions that use it): a variable every function can use
+                if self.in_func {
+                    return Err(format!("'global' goes at the top level, before the functions (at {pos})"));
+                }
+                self.next();
+                let Tok::Ident(name) = self.peek() else {
+                    return Err(format!("'global' needs a name at {pos}"));
+                };
+                let name = name.clone();
+                if KEYWORDS.contains(&name.as_str()) || self.consts.iter().any(|(n, _)| *n == name) {
+                    return Err(format!("'{name}' cannot be a global (at {pos})"));
+                }
+                self.next();
+                let slot = match self.lookup(&name) {
+                    Some(s) => s,
+                    None => {
+                        self.names.push(name.clone());
+                        self.visible.push((name.clone(), self.names.len() - 1));
+                        self.names.len() - 1
+                    }
+                };
+                self.globals.push((name, slot));
+                Ok(Stmt::If(Expr::Num(0), Vec::new(), Vec::new()))
+            }
             Tok::Ident(w) if w == "const" => {
                 // const NAME 42   (or a negative number): a name for a fixed number
                 self.next();
@@ -432,6 +465,11 @@ impl Parser {
                 self.next(); // skip the name and the '='
                 // parse the value BEFORE defining the name, so `x = x+1` needs x to exist
                 let value = self.expr(1)?;
+                if self.lookup(&name).is_none() {
+                    if let Some((_, g)) = self.globals.iter().find(|(n, _)| *n == name) {
+                        return Ok(Stmt::GAssign(*g, value));
+                    }
+                }
                 let slot = match self.lookup(&name) {
                     Some(slot) => slot,
                     None => {
@@ -444,7 +482,7 @@ impl Parser {
             }
             Tok::Ident(name) if *self.peek2() == Tok::Sym('{') => {
                 let name = name.clone();
-                let Some(slot) = self.lookup(&name) else {
+                let Some(base) = self.var(&name) else {
                     return Err(format!("'{name}' is not defined at {pos}"));
                 };
                 self.next();
@@ -459,11 +497,11 @@ impl Parser {
                 }
                 self.next();
                 let v = self.expr(1)?;
-                Ok(Stmt::BStore(Expr::Var(slot), i, v))
+                Ok(Stmt::BStore(base, i, v))
             }
             Tok::Ident(name) if *self.peek2() == Tok::Sym('[') => {
                 let name = name.clone();
-                let Some(slot) = self.lookup(&name) else {
+                let Some(base) = self.var(&name) else {
                     return Err(format!("'{name}' is not defined at {pos}"));
                 };
                 self.next();
@@ -478,7 +516,7 @@ impl Parser {
                 }
                 self.next();
                 let v = self.expr(1)?;
-                Ok(Stmt::Store(Expr::Var(slot), i, v))
+                Ok(Stmt::Store(base, i, v))
             }
             Tok::Ident(_) if *self.peek2() == Tok::Sym('(') => Ok(Stmt::Eval(self.expr(1)?)),
             t => Err(format!("expected 'mouth', 'if', 'heart' or a name at {pos}, found {t:?}")),
@@ -504,6 +542,7 @@ pub fn parse_with(toks: Vec<(Tok, usize)>, src: &str) -> Result<Program, String>
         in_func: false,
         scopes: 0,
         consts: Vec::new(),
+        globals: Vec::new(),
     };
     if !src.is_empty() {
         let mut depth = 0i32;

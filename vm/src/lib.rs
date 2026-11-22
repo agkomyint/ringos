@@ -58,6 +58,9 @@ pub mod op {
     pub const PUSH8: u8 = 38; // i8: small numbers cost 2 bytes instead of 9
     pub const PUSH16: u8 = 39; // i16
     pub const TEXTLIT: u8 = 37; // u16 string number; pop colour, y, x: draw that literal text (no array made)
+    pub const GLOAD: u8 = 41; // u16 slot of the main program: a `global` variable, readable from any function
+    pub const GSTORE: u8 = 42; // u16 slot of the main program
+    pub const TEXTXLIT: u8 = 43; // u16 string number; pop mult, colour, y, x: big literal text
     pub const SPRITELIT: u8 = 40; // u16 string number; pop scale, width, y, x: draw that literal picture
 }
 
@@ -87,6 +90,24 @@ pub const INTRINSICS: &[(&str, usize)] = &[
     ("tiles", 6),  // tiles(map, map_width, sheet, tile_size, scroll_x, scroll_y): draw a scrolling tile map
     ("overlap", 8), // overlap(x1,y1,w1,h1, x2,y2,w2,h2): 1 if the two rectangles overlap
     ("shake", 1),  // shake(n): jolt the next shown frame by up to n pixels
+    ("fmul", 2),   // fmul(a, b): fixed point (x1000) multiply: a*b/1000
+    ("fdiv", 2),   // fdiv(a, b): fixed point divide: a*1000/b (0 if b is 0)
+    ("sqrt", 1),   // sqrt(n): whole-number square root
+    ("fsqrt", 1),  // fsqrt(x): fixed point square root (x1000 in, x1000 out)
+    ("pow", 2),    // pow(a, b): a to the whole power b (saturates)
+    ("pct", 2),    // pct(n, p): p percent of n
+    ("lerp", 3),   // lerp(a, b, t): a + (b-a)*t/1000, t in 0..1000
+    ("sum", 2),    // sum(array, n): add the first n cells
+    ("top", 2),    // top(array, n): the biggest of the first n cells
+    ("low", 2),    // low(array, n): the smallest of the first n cells
+    ("sort", 2),   // sort(array, n): sort the first n cells, smallest first
+    ("fill", 3),   // fill(array, n, v): set the first n cells to v
+    ("rndn", 2),   // rndn(mean, sd): a bell-curve random number (sd in the same units as mean)
+    ("seed", 1),   // seed(n): restart the random numbers from n (same n, same sequence)
+    ("tick", 1),   // tick(hz): how many simulation steps are due, for a clock running hz steps a second
+    ("plot", 7),   // plot(array, n, x, y, w, h, colour): a line chart of the first n cells
+    ("bars", 7),   // bars(array, n, x, y, w, h, colour): a bar chart
+    ("textx", 5),  // textx(x, y, "string", colour, mult): text mult times bigger
 ];
 
 pub trait Host {
@@ -113,6 +134,9 @@ pub trait Host {
     fn save(&mut self, _slot: i64, _value: i64) {}
     /// Draw a picture: `data` holds one character per pixel, `w` pixels per row, each pixel a
     /// `scale` x `scale` block. `0-9a-f` are colours 0-15; anything else (`.`) is see-through.
+    fn textx(&mut self, x: i64, y: i64, s: &[u8], color: i64, _mult: i64) {
+        self.text(x, y, s, color);
+    }
     fn palette(&mut self, _colour: i64, _r: i64, _g: i64, _b: i64) {}
     fn shake(&mut self, _n: i64) {}
     /// Draw a scrolling map: `map` holds tile numbers (`map_w` per row); `sheet` holds the tiles
@@ -201,9 +225,9 @@ impl Program {
                 let n = match code[pc] {
                     op::PUSH => 8,
                     op::PUSH8 | op::INTR => 1,
-                    op::LOAD | op::STORE | op::CALL | op::PRINTS | op::LIT | op::PUSH16 | op::TEXTLIT | op::SPRITELIT => 2,
+                    op::LOAD | op::STORE | op::GLOAD | op::GSTORE | op::CALL | op::PRINTS | op::LIT | op::PUSH16 | op::TEXTLIT | op::SPRITELIT | op::TEXTXLIT => 2,
                     op::JMP | op::JZ | op::JNZ => 4,
-                    0..=40 => 0,
+                    0..=43 => 0,
                     _ => return Err("unknown instruction"),
                 };
                 pc += 1 + n;
@@ -231,13 +255,19 @@ impl Program {
                         }
                         pc += 3;
                     }
+                    op::GLOAD | op::GSTORE => {
+                        if u16at(at) >= self.funcs[self.main as usize].nvars as usize {
+                            return Err("global out of range");
+                        }
+                        pc += 3;
+                    }
                     op::CALL => {
                         if u16at(at) >= self.funcs.len() {
                             return Err("call to a missing function");
                         }
                         pc += 3;
                     }
-                    op::PRINTS | op::LIT | op::TEXTLIT | op::SPRITELIT => {
+                    op::PRINTS | op::LIT | op::TEXTLIT | op::SPRITELIT | op::TEXTXLIT => {
                         if u16at(at) >= self.strings.len() {
                             return Err("missing string");
                         }
@@ -402,6 +432,7 @@ pub struct Vm<'p> {
     scope_marks: Vec<usize>,
     pc: usize,
     rng: u64,
+    tick_last: i64,
 }
 
 impl<'p> Vm<'p> {
@@ -418,6 +449,7 @@ impl<'p> Vm<'p> {
             scope_marks: Vec::new(),
             pc: 0,
             rng: seed | 1,
+            tick_last: -1,
         }
     }
 
@@ -554,6 +586,16 @@ impl<'p> Vm<'p> {
                     let i = self.slot(s)?;
                     let v = self.pop()?;
                     *self.stack.get_mut(i).ok_or(VmError::BadProgram)? = v;
+                }
+                op::GLOAD => {
+                    let s = self.u16()? as usize;
+                    let v = *self.stack.get(s).ok_or(VmError::BadProgram)?;
+                    self.stack.push(v);
+                }
+                op::GSTORE => {
+                    let s = self.u16()? as usize;
+                    let v = self.pop()?;
+                    *self.stack.get_mut(s).ok_or(VmError::BadProgram)? = v;
                 }
                 op::ADD | op::SUB | op::MUL | op::DIV | op::MOD | op::EQ | op::NE | op::LT | op::GT | op::LE | op::GE => {
                     let b = self.pop()?;
@@ -717,6 +759,16 @@ impl<'p> Vm<'p> {
                     host.text(x, y, t, c);
                     self.stack.push(0);
                 }
+                op::TEXTXLIT => {
+                    let i = self.u16()? as usize;
+                    let m = self.pop()?;
+                    let c = self.pop()?;
+                    let y = self.pop()?;
+                    let x = self.pop()?;
+                    let t = self.prog.strings.get(i).ok_or(VmError::BadProgram)?;
+                    host.textx(x, y, t, c, m);
+                    self.stack.push(0);
+                }
                 op::SPRITELIT => {
                     let i = self.u16()? as usize;
                     let scale = self.pop()?;
@@ -845,9 +897,150 @@ impl<'p> Vm<'p> {
                 host.shake(a[0]);
                 0
             }
+            22 => sat(a[0] as i128 * a[1] as i128 / 1000),
+            23 => {
+                if a[1] == 0 {
+                    0
+                } else {
+                    sat(a[0] as i128 * 1000 / a[1] as i128)
+                }
+            }
+            24 => isqrt(a[0].max(0) as u128) as i64,
+            25 => isqrt(a[0].max(0) as u128 * 1000) as i64,
+            26 => {
+                let mut r: i64 = 1;
+                for _ in 0..a[1].clamp(0, 64) {
+                    r = r.saturating_mul(a[0]);
+                }
+                if a[1] < 0 {
+                    0
+                } else {
+                    r
+                }
+            }
+            27 => sat(a[0] as i128 * a[1] as i128 / 100),
+            28 => sat(a[0] as i128 + (a[1] as i128 - a[0] as i128) * a[2] as i128 / 1000),
+            29 => {
+                let v = self.cells(a[0], a[1])?;
+                v.iter().fold(0i64, |s, &x| s.saturating_add(x))
+            }
+            30 => self.cells(a[0], a[1])?.into_iter().max().unwrap_or(0),
+            31 => self.cells(a[0], a[1])?.into_iter().min().unwrap_or(0),
+            32 => {
+                match self.arr_mut(a[0])? {
+                    Cells::W(v) => {
+                        let n = (a[1].max(0) as usize).min(v.len());
+                        v[..n].sort_unstable();
+                    }
+                    Cells::B(v) => {
+                        let n = (a[1].max(0) as usize).min(v.len());
+                        v[..n].sort_unstable();
+                    }
+                }
+                0
+            }
+            33 => {
+                let c = self.arr_mut(a[0])?;
+                for i in 0..(a[1].max(0) as usize).min(c.len()) {
+                    c.set(i, a[2]);
+                }
+                0
+            }
+            34 => {
+                let mut s = 0i64;
+                for _ in 0..12 {
+                    s += (self.next_rand() % 1001) as i64;
+                }
+                a[0].saturating_add(sat(a[1] as i128 * (s - 6000) as i128 / 1000))
+            }
+            35 => {
+                self.rng = (a[0] as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                0
+            }
+            36 => {
+                let hz = a[0].clamp(1, 1000);
+                let now = host.time();
+                if self.tick_last < 0 {
+                    self.tick_last = now;
+                }
+                let n = (now - self.tick_last).max(0) * hz / 1000;
+                if n > 0 {
+                    self.tick_last += n * 1000 / hz;
+                }
+                n.min(10)
+            }
+            37 => {
+                let d = self.cells(a[0], a[1])?;
+                let (x, y, w, h, c) = (a[2], a[3], a[4].clamp(0, 4096), a[5], a[6]);
+                if d.len() >= 2 && w >= 2 && h >= 1 {
+                    let lo = *d.iter().min().unwrap();
+                    let range = (*d.iter().max().unwrap() - lo).max(1);
+                    let mut prev = 0;
+                    for px in 0..w {
+                        let v = d[(px * (d.len() as i64 - 1) / (w - 1)) as usize];
+                        let py = y + h - 1 - sat((v - lo) as i128 * (h - 1) as i128 / range as i128);
+                        if px == 0 {
+                            host.rect(x, py, 1, 1, c);
+                        } else {
+                            host.rect(x + px, py.min(prev), 1, (py - prev).abs() + 1, c);
+                        }
+                        prev = py;
+                    }
+                }
+                0
+            }
+            38 => {
+                let d = self.cells(a[0], a[1])?;
+                let (x, y, w, h, c) = (a[2], a[3], a[4], a[5], a[6]);
+                if !d.is_empty() {
+                    let mx = (*d.iter().max().unwrap()).max(1);
+                    let bw = (w / d.len() as i64).max(1);
+                    for (i, &v) in d.iter().enumerate() {
+                        let bh = sat(v.max(0) as i128 * h as i128 / mx as i128);
+                        if bh > 0 {
+                            host.rect(x + i as i64 * bw, y + h - bh, (bw - 1).max(1), bh, c);
+                        }
+                    }
+                }
+                0
+            }
+            39 => {
+                match self.arr(a[2])? {
+                    Cells::B(v) => host.textx(a[0], a[1], v, a[3], a[4]),
+                    Cells::W(v) => {
+                        let bytes: Vec<u8> = v.iter().map(|&c| c as u8).collect();
+                        host.textx(a[0], a[1], &bytes, a[3], a[4]);
+                    }
+                }
+                0
+            }
             _ => return Err(VmError::BadProgram),
         }))
     }
+
+    /// The first n cells of an array as numbers (n is clamped to the array's size).
+    fn cells(&self, h: i64, n: i64) -> Result<Vec<i64>, VmError> {
+        let c = self.arr(h)?;
+        let n = (n.max(0) as usize).min(c.len());
+        Ok((0..n).filter_map(|i| c.get(i)).collect())
+    }
+}
+
+fn sat(v: i128) -> i64 {
+    v.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
+fn isqrt(n: u128) -> u128 {
+    if n < 2 {
+        return n;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
 
 /// `String::from_utf8_lossy` lives in alloc as `String::from_utf8_lossy` returning Cow; this tiny

@@ -16,6 +16,8 @@ Design notes and measurements are in [`research/`](research/).
     cargo run        # builds target/ringos.img (disk, for USB) and target/ringos.iso (CD, for VMs)
     .\run.ps1        # boots it in VirtualBox
 
+Ring has fixed-point maths, shared `global` variables, array statistics, bell-curve randomness, a fixed-rate `tick` clock and built-in line/bar charts for simulations; `games/market.ring` is a small stock-market demo (![market](docs/market.png)).
+
 See `SYNTAX.md` for the language and `games/` for examples.
 
 ## Boot it
