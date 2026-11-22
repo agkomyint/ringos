@@ -94,6 +94,8 @@ scope                   arrays made inside the indented block are freed when it 
 | `tick(hz)` | how many simulation steps are due (0..10) for a clock of `hz` steps a second; independent of the frame rate |
 | `plot(a, n, x, y, w, h, c)` / `bars(...)` | line / bar chart of the first `n` cells, scaled to fit the box |
 | `textx(x, y, "text", c, m)` | text `m` times bigger (1-8) |
+| `line(x1, y1, x2, y2, c)` | a straight line |
+| `sin(deg)`, `cos(deg)` | sine/cosine of an angle in degrees, x1000 (fixed point) |
 
 ### Shared variables: `global`
 Functions only see their parameters. To share a variable with them, declare it at the top level

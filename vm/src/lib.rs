@@ -108,6 +108,9 @@ pub const INTRINSICS: &[(&str, usize)] = &[
     ("plot", 7),   // plot(array, n, x, y, w, h, colour): a line chart of the first n cells
     ("bars", 7),   // bars(array, n, x, y, w, h, colour): a bar chart
     ("textx", 5),  // textx(x, y, "string", colour, mult): text mult times bigger
+    ("line", 5),   // line(x1, y1, x2, y2, colour): a straight line
+    ("sin", 1),    // sin(degrees): fixed point sine (x1000)
+    ("cos", 1),    // cos(degrees): fixed point cosine (x1000)
 ];
 
 pub trait Host {
@@ -136,6 +139,30 @@ pub trait Host {
     /// `scale` x `scale` block. `0-9a-f` are colours 0-15; anything else (`.`) is see-through.
     fn textx(&mut self, x: i64, y: i64, s: &[u8], color: i64, _mult: i64) {
         self.text(x, y, s, color);
+    }
+    /// A straight line (Bresenham), drawn with `rect`, which clips.
+    fn line(&mut self, x0: i64, y0: i64, x1: i64, y1: i64, c: i64) {
+        let k = 4096;
+        let (mut x, mut y) = (x0.clamp(-k, k), y0.clamp(-k, k));
+        let (x1, y1) = (x1.clamp(-k, k), y1.clamp(-k, k));
+        let (dx, dy) = ((x1 - x).abs(), -(y1 - y).abs());
+        let (sx, sy) = (if x < x1 { 1 } else { -1 }, if y < y1 { 1 } else { -1 });
+        let mut err = dx + dy;
+        loop {
+            self.rect(x, y, 1, 1, c);
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
     }
     fn palette(&mut self, _colour: i64, _r: i64, _g: i64, _b: i64) {}
     fn shake(&mut self, _n: i64) {}
@@ -1014,6 +1041,12 @@ impl<'p> Vm<'p> {
                 }
                 0
             }
+            40 => {
+                host.line(a[0], a[1], a[2], a[3], a[4]);
+                0
+            }
+            41 => sin_milli(a[0]),
+            42 => sin_milli(a[0].saturating_add(90)),
             _ => return Err(VmError::BadProgram),
         }))
     }
@@ -1024,6 +1057,15 @@ impl<'p> Vm<'p> {
         let n = (n.max(0) as usize).min(c.len());
         Ok((0..n).filter_map(|i| c.get(i)).collect())
     }
+}
+
+/// Sine of a whole number of degrees, x1000 (parabola approximation, within ~0.2%).
+fn sin_milli(deg: i64) -> i64 {
+    let d = deg.rem_euclid(360);
+    let (x, neg) = if d >= 180 { (d - 180, true) } else { (d, false) };
+    let p = x * (180 - x);
+    let v = 4000 * p / (40500 - p);
+    if neg { -v } else { v }
 }
 
 fn sat(v: i128) -> i64 {
