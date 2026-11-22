@@ -175,12 +175,8 @@ impl<'a> Host for Arcade<'a> {
         // wait for the 60 Hz frame boundary, reading the keyboard as we go (a tap is never missed)
         poll();
         while now_ms() < self.next {
-            // plenty of time left: sleep until the firmware's next timer tick (<= 10 ms) instead of burning power
-            if self.next - now_ms() >= 11 {
-                crate::input::idle();
-            } else {
-                uefi::boot::stall(Duration::from_micros(300));
-            }
+            // busy-wait in short steps: sleeping (hlt) let the firmware's own keyboard driver grab scancodes first
+            uefi::boot::stall(Duration::from_micros(300));
             poll();
         }
         self.next = now_ms() + 16;

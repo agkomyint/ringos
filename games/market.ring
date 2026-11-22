@@ -13,6 +13,8 @@ step
     p = p + pct(p, rndn(100, 400 + i * 300)) / 100
     if p < 1000
       p = 1000
+    if p > 400000
+      p = 400000
     price[i] = p
     a = hs[i]
     for j 1 H

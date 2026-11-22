@@ -35,20 +35,6 @@ pub fn now_ms() -> u64 {
     rdtsc().wrapping_sub(T0.load(Ordering::Relaxed)) / CYCLES_PER_MS.load(Ordering::Relaxed)
 }
 
-/// Halt the CPU until the next interrupt (the firmware's timer ticks at least every 10 ms).
-/// Only when interrupts are enabled: with them off `hlt` would never return.
-pub fn idle() {
-    unsafe {
-        let flags: u64;
-        core::arch::asm!("pushfq; pop {}", out(reg) flags);
-        if flags & (1 << 9) != 0 {
-            core::arch::asm!("hlt");
-        } else {
-            core::arch::asm!("pause");
-        }
-    }
-}
-
 /// Read every byte waiting in the PS/2 controller.
 pub fn poll() {
     crate::sound::pump();
