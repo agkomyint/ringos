@@ -65,7 +65,11 @@ heart 1 == 1
   text(240, 2, "BEST", 7)
   num(280, 2, best, 7)
   if cs >= 5
-    text(72, 90, "GAME OVER - A to retry", 15)
+    rect(60, 70, 200, 60, 1)
+    rect(60, 70, 200, 1, 15)
+    rect(60, 129, 200, 1, 15)
+    text(124, 80, "GAME OVER", 14)
+    text(84, 100, "A retry     ESC menu", 15)
     if saved == 0
       saved = 1
       if ps > best

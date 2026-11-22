@@ -57,6 +57,38 @@ impl<'a> Arcade<'a> {
 }
 
 impl<'a> Arcade<'a> {
+    /// Launch screen shown before every game: name, best score, controls. false = back to menu.
+    fn title_screen(&mut self) -> bool {
+        let best = self.slots[0];
+        let mut name = self.game.clone();
+        name.make_ascii_uppercase();
+        for k in PRESSED.iter() {
+            k.store(false, Relaxed);
+        }
+        let mut n = 0u32;
+        loop {
+            self.clear(1);
+            self.rect(0, 0, 320, 4, 9);
+            self.rect(0, 196, 320, 4, 9);
+            self.text_big(160 - name.len() as i64 * 8, 50, &name, 14, 2);
+            self.text_big(112, 90, &format!("BEST  {best}"), 15, 1);
+            self.text_big(64, 120, "ARROWS move   A fire/action", 7, 1);
+            self.text_big(64, 132, "ESC pauses    hold ESC quits", 7, 1);
+            if n / 30 % 2 == 0 {
+                self.text_big(88, 166, "PRESS ENTER TO START", 10, 1);
+            }
+            self.text_big(112, 184, "ESC  back to menu", 8, 1);
+            self.frame();
+            n += 1;
+            if take_pressed(0x1C) || take_pressed(0x39) {
+                return true;
+            }
+            if take_pressed(ESC) {
+                return false;
+            }
+        }
+    }
+
     /// Esc during a game: freeze it behind a small box. ENTER resumes, Esc leaves the game.
     /// Returns false when the player leaves (the VM then stops).
     fn pause(&mut self) -> bool {
@@ -316,6 +348,9 @@ pub fn run(s: &mut Screen, mut pak: Option<Pak<DiskReader>>) -> ! {
                         a.slots = store::load(&a.game);
                         a.writes_left = 16;
                         a.dirty = false;
+                        if !a.title_screen() {
+                            continue;
+                        }
                         a.start = now_ms();
                         a.in_game = true;
                         let result = vm.run(&mut a);

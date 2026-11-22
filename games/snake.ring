@@ -67,7 +67,11 @@ heart 1 == 1
   text(200, 6, "BEST", 15)
   num(240, 6, best, 15)
   if over == 1
-    text(72, 90, "GAME OVER - A to retry", 15)
+    rect(60, 70, 200, 60, 1)
+    rect(60, 70, 200, 1, 15)
+    rect(60, 129, 200, 1, 15)
+    text(124, 80, "GAME OVER", 14)
+    text(84, 100, "A retry     ESC menu", 15)
     if saved == 0
       saved = 1
       beep(150, 300)

@@ -69,9 +69,17 @@ heart 1 == 1
   num(260, 2, best, 7)
   if lives == 0 or left == 0
     if left == 0
-      text(96, 110, "YOU WIN - A to retry", 14)
+      rect(60, 70, 200, 60, 1)
+      rect(60, 70, 200, 1, 15)
+      rect(60, 129, 200, 1, 15)
+      text(132, 80, "YOU WIN", 14)
+      text(84, 100, "A retry     ESC menu", 15)
     else
-      text(72, 110, "GAME OVER - A to retry", 15)
+      rect(60, 70, 200, 60, 1)
+      rect(60, 70, 200, 1, 15)
+      rect(60, 129, 200, 1, 15)
+      text(124, 80, "GAME OVER", 14)
+      text(84, 100, "A retry     ESC menu", 15)
     if saved == 0
       saved = 1
       if score > best
