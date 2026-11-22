@@ -410,3 +410,22 @@ mod tests {
         assert!(compile("rect(1, 2)").is_err()); // wrong arity
     }
 }
+
+#[cfg(test)]
+mod example_programs {
+    /// Every program in examples/ and games/ must compile: the docs can't rot unnoticed.
+    #[test]
+    fn all_examples_compile() {
+        for dir in ["../examples", "../games"] {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.extension().map_or(false, |x| x == "ring") {
+                    let src = std::fs::read_to_string(&p).unwrap();
+                    if let Err(err) = super::compile(&src) {
+                        panic!("{}: {err}", p.display());
+                    }
+                }
+            }
+        }
+    }
+}

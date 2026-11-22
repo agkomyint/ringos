@@ -34,8 +34,9 @@ fn color(c: i64) -> u32 {
     }
 }
 
-/// PS/2 scancodes for the game buttons: left, right, up, down, A (Z), B (X), start (Enter).
-const KEYMAP: [u8; 7] = [0x4B, 0x4D, 0x48, 0x50, 0x2C, 0x2D, 0x1C];
+/// PS/2 scancodes per game button. Each button accepts several keys: left, right, up, down,
+/// A (A, Z, Space), B (S, X, Shift), start (Enter).
+const KEYMAP: [&[u8]; 7] = [&[0x4B], &[0x4D], &[0x48], &[0x50], &[0x1E, 0x2C, 0x39], &[0x1F, 0x2D, 0x2A], &[0x1C]];
 const ESC: u8 = 0x01;
 
 struct Arcade<'a> {
@@ -91,13 +92,13 @@ impl<'a> Host for Arcade<'a> {
         self.text_big(x, y, &format!("{}", n), c, 1);
     }
     fn key(&mut self, k: i64) -> bool {
-        KEYMAP.get(k as usize).map_or(false, |&sc| key_down(sc) || PRESSED[sc as usize].load(Relaxed))
+        KEYMAP.get(k as usize).map_or(false, |keys| keys.iter().any(|&sc| key_down(sc) || PRESSED[sc as usize].load(Relaxed)))
     }
     fn frame(&mut self) -> bool {
         self.s.present();
         if self.in_game {
             // the game has had its look at this frame's input: forget the latched taps
-            for &sc in &KEYMAP {
+            for &sc in KEYMAP.iter().flat_map(|k| k.iter()) {
                 PRESSED[sc as usize].store(false, Relaxed);
             }
         }
@@ -136,7 +137,7 @@ pub fn run(s: &mut Screen, games: Vec<Game>) -> ! {
     loop {
         let up = edge(&mut prev, 0x48);
         let down = edge(&mut prev, 0x50);
-        let go = edge(&mut prev, 0x1C) | edge(&mut prev, 0x2C) | edge(&mut prev, 0x39);
+        let go = edge(&mut prev, 0x1C) | edge(&mut prev, 0x1E) | edge(&mut prev, 0x2C) | edge(&mut prev, 0x39);
         if up && sel > 0 {
             sel -= 1;
         }
@@ -148,6 +149,9 @@ pub fn run(s: &mut Screen, games: Vec<Game>) -> ! {
             let seed = TICKS.load(Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
             let mut vm = Vm::new(&games[sel].program, seed);
             a.next = 0;
+            for k in PRESSED.iter() {
+                k.store(false, Relaxed); // taps made in the menu must not leak into the game
+            }
             a.in_game = true;
             let result = vm.run(&mut a);
             a.in_game = false;

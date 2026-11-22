@@ -1,0 +1,15 @@
+mouth "start"
+mouth 7-100
+mouth 5*-3
+mouth 10000000000*3
+mouth (1+2)*(3+4)-5
+mouth 100%7
+mouth -100/7
+mouth -100%7
+mouth 9223372036854775807+1
+mouth 2147483647+1
+mouth 4294967295
+mouth 4294967296
+mouth -2147483648
+mouth 0-0
+mouth "end"
