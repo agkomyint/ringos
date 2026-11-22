@@ -1,3 +1,4 @@
+gate = 0
 # Shooter: the 0.3.0 showcase (for, const, comments, overlap, shake, palette)
 const NB 8
 const NE 6
@@ -132,7 +133,9 @@ heart 1 == 1
     rect(60, 129, 200, 1, 15)
     text(124, 80, "GAME OVER", 14)
     text(84, 100, "A retry     ESC menu", 15)
-    if key(4)
+    gate = gate + 1
+    if key(4) and gate > 40
+      gate = 0
       lives = 3
       score = 0
       wave = 1

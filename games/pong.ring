@@ -1,3 +1,4 @@
+gate = 0
 py = 80
 cy = 80
 bx = 160
@@ -70,12 +71,14 @@ heart 1 == 1
     rect(60, 129, 200, 1, 15)
     text(124, 80, "GAME OVER", 14)
     text(84, 100, "A retry     ESC menu", 15)
+    gate = gate + 1
     if saved == 0
       saved = 1
       if ps > best
         best = ps
         save(0, best)
-    if key(4)
+    if key(4) and gate > 40
+      gate = 0
       saved = 0
       cs = 0
       ps = 0

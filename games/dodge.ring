@@ -1,3 +1,4 @@
+gate = 0
 hit px bx by
   if bx + 12 > px and bx < px + 24 and by + 12 > 180
     back 1
@@ -43,13 +44,15 @@ heart 1 == 1
     rect(60, 129, 200, 1, 15)
     text(124, 80, "GAME OVER", 14)
     text(84, 100, "A retry     ESC menu", 15)
+    gate = gate + 1
     if saved == 0
       saved = 1
       beep(150, 300)
       if score > best
         best = score
         save(0, best)
-    if key(4)
+    if key(4) and gate > 40
+      gate = 0
       saved = 0
       px = 148
       bx = rnd(300)

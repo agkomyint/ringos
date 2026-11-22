@@ -1,3 +1,4 @@
+gate = 0
 tx = bytes 600
 ty = bytes 600
 len = 3
@@ -72,13 +73,15 @@ heart 1 == 1
     rect(60, 129, 200, 1, 15)
     text(124, 80, "GAME OVER", 14)
     text(84, 100, "A retry     ESC menu", 15)
+    gate = gate + 1
     if saved == 0
       saved = 1
       beep(150, 300)
       if score > best
         best = score
         save(0, best)
-    if key(4)
+    if key(4) and gate > 40
+      gate = 0
       saved = 0
       len = 3
       tx{0} = 10
