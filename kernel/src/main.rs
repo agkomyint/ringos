@@ -3,10 +3,13 @@
 
 extern crate alloc;
 
+mod arcade;
 mod gfx;
 mod heap;
 mod interrupts;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::time::Duration;
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
@@ -47,8 +50,12 @@ fn main() -> Status {
     let take = (HEAP_BYTES as u64 / 4096).min(pages);
     let heap_ptr = boot::allocate_pages(AllocateType::Address(start), MemoryType::LOADER_DATA, take as usize).unwrap();
     unsafe { HEAP.init(heap_ptr.as_ptr() as usize, (take * 4096) as usize) };
-    uefi::println!("  heap: {} MiB claimed. Taking over in 3s...", take * 4 / 1024);
-    boot::stall(Duration::from_secs(3));
+    uefi::println!("  heap: {} MiB claimed. Taking over...", take * 4 / 1024);
+    boot::stall(Duration::from_secs(1));
+
+    // ---- 2b. Load the preinstalled games from disk (firmware still alive).
+    let games = load_games();
+    uefi::println!("  games: {} loaded", games.len());
 
     // ---- 3. Grab the screen while firmware can still hand it to us.
     let handle = boot::get_handle_for_protocol::<GraphicsOutput>().unwrap();
@@ -65,43 +72,30 @@ fn main() -> Status {
         interrupts::SCREEN = &mut s;
         interrupts::init();
     }
-    use core::sync::atomic::Ordering::Relaxed;
-    use interrupts::{key_down, LAST_SCANCODE, TICKS};
+    arcade::run(&mut s, games)
+}
 
-    let bg = 0x101030;
-    let size = 40usize;
-    let (mut x, mut y) = (50i32, 50i32);
-    let (mut dx, mut dy) = (4i32, 3i32);
-    let (mut px, mut py) = (500i32, 400i32); // player, moved with the arrow keys
-    let mut next = 0u64;
-    loop {
-        // sleep the CPU until the timer says it's time for the next frame (~60 fps)
-        while TICKS.load(Relaxed) < next {
-            x86_64::instructions::hlt();
+/// Read every `\games\*.rbc` from the boot disk. Must run before ExitBootServices (firmware does the disk I/O).
+fn load_games() -> Vec<arcade::Game> {
+    use alloc::string::ToString;
+    use uefi::fs::{FileSystem, PathBuf};
+    use uefi::{cstr16, CString16};
+    let mut games = Vec::new();
+    let Ok(sfs) = boot::get_image_file_system(boot::image_handle()) else { return games };
+    let mut fs = FileSystem::new(sfs);
+    let Ok(dir) = fs.read_dir(cstr16!("\\games")) else { return games };
+    let names: Vec<String> = dir.filter_map(|e| e.ok()).filter(|e| e.is_regular_file()).map(|e| e.file_name().to_string()).collect();
+    for file in names {
+        let Some(stem) = file.strip_suffix(".rbc") else { continue };
+        let Ok(full) = CString16::try_from(alloc::format!("\\games\\{file}").as_str()) else { continue };
+        let path = PathBuf::from(full);
+        let Ok(bytes) = fs.read(&path) else { continue };
+        if let Ok(program) = ringvm::Program::from_bytes(&bytes) {
+            games.push(arcade::Game { name: stem.to_string(), program });
         }
-        next = TICKS.load(Relaxed) + 16;
-
-        if key_down(0x4B) { px -= 6; } // left
-        if key_down(0x4D) { px += 6; } // right
-        if key_down(0x48) { py -= 6; } // up
-        if key_down(0x50) { py += 6; } // down
-        px = px.clamp(0, (s.width - size) as i32);
-        py = py.clamp(16, (s.height - size) as i32);
-        if key_down(0x2E) {
-            // 'C': deliberately touch unmapped memory to see the crash screen
-            unsafe { (0x1000_0000_0000usize as *mut u8).write_volatile(1) };
-        }
-
-        s.clear(bg);
-        s.text(4, 4, &alloc::format!("ticks {}  last scancode {:#04x}  arrows move, C crashes", TICKS.load(Relaxed), LAST_SCANCODE.load(Relaxed)), 0xffffff, 1);
-        x += dx;
-        y += dy;
-        if x < 0 || x as usize + size >= s.width { dx = -dx; x += dx; }
-        if y < 16 || y as usize + size >= s.height { dy = -dy; y += dy; }
-        s.rect(x as usize, y as usize, size, size, 0xffa000);
-        s.rect(px as usize, py as usize, size, size, 0x40e0ff);
-        s.present();
     }
+    games.sort_by(|a, b| a.name.cmp(&b.name));
+    games
 }
 
 /// No libc here, so provide the one C function the firmware bindings expect.

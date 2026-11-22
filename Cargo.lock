@@ -223,6 +223,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "font8x8",
+ "ringvm",
  "uefi",
  "x86_64",
 ]
@@ -297,6 +298,17 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "ringcc"
+version = "0.1.0"
+dependencies = [
+ "ringvm",
+]
+
+[[package]]
+name = "ringvm"
+version = "0.1.0"
 
 [[package]]
 name = "rustversion"
@@ -542,4 +554,5 @@ dependencies = [
  "fatfs",
  "fscommon",
  "gpt",
+ "ringcc",
 ]

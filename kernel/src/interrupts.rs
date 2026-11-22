@@ -22,6 +22,9 @@ use crate::gfx::Screen;
 pub static TICKS: AtomicU64 = AtomicU64::new(0);
 /// Which keys are held down, indexed by PS/2 scancode.
 pub static KEYS: [AtomicBool; 128] = [const { AtomicBool::new(false) }; 128];
+/// Latched presses: set by the interrupt on key-down, cleared when a reader consumes it. A tap
+/// shorter than one frame is still seen, because the latch outlives the key being held.
+pub static PRESSED: [AtomicBool; 128] = [const { AtomicBool::new(false) }; 128];
 pub static LAST_SCANCODE: AtomicU8 = AtomicU8::new(0);
 /// Set by main so the crash handler can paint the screen.
 pub static mut SCREEN: *mut Screen = core::ptr::null_mut();
@@ -33,6 +36,10 @@ static mut TSS: TaskStateSegment = TaskStateSegment::new();
 static mut GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static mut DOUBLE_FAULT_STACK: [u8; 16 * 1024] = [0; 16 * 1024];
+
+pub fn take_pressed(scancode: u8) -> bool {
+    PRESSED[(scancode & 0x7f) as usize].swap(false, Ordering::Relaxed)
+}
 
 pub fn key_down(scancode: u8) -> bool {
     KEYS[(scancode & 0x7f) as usize].load(Ordering::Relaxed)
@@ -196,6 +203,9 @@ extern "C" fn keyboard_handler() {
     if code != 0xE0 {
         let pressed = code & 0x80 == 0; // high bit set = key released
         KEYS[(code & 0x7f) as usize].store(pressed, Ordering::Relaxed);
+        if pressed {
+            PRESSED[(code & 0x7f) as usize].store(true, Ordering::Relaxed);
+        }
         LAST_SCANCODE.store(code, Ordering::Relaxed);
     }
     eoi();

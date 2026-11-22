@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["kernel", "xtask"]
+members = ["kernel", "xtask", "vm", "compiler"]
 default-members = ["xtask"]
