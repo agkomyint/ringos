@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod gfx;
 mod heap;
+mod interrupts;
 
 use core::time::Duration;
 use uefi::boot::{self, AllocateType, MemoryType};
@@ -59,26 +60,47 @@ fn main() -> Status {
     // From here the machine is ours. The framebuffer memory stays valid.
     let _final_map = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
-    // ---- 5. Game loop with no firmware help. No stall() now, so we pace by busy-waiting
-    // (crude; a real timer comes with interrupts).
+    // ---- 5. Interrupts: the CPU now reacts to the timer and keyboard.
+    unsafe {
+        interrupts::SCREEN = &mut s;
+        interrupts::init();
+    }
+    use core::sync::atomic::Ordering::Relaxed;
+    use interrupts::{key_down, LAST_SCANCODE, TICKS};
+
     let bg = 0x101030;
     let size = 40usize;
     let (mut x, mut y) = (50i32, 50i32);
     let (mut dx, mut dy) = (4i32, 3i32);
+    let (mut px, mut py) = (500i32, 400i32); // player, moved with the arrow keys
+    let mut next = 0u64;
     loop {
-        s.clear(bg);
-        // a green bar showing how much of the heap we've used, just to prove the allocator
-        let (used, free) = HEAP.used_free(heap_ptr.as_ptr() as usize);
-        let w = s.width * used / (used + free);
-        s.rect(0, 0, w.max(2), 8, 0x40e060);
+        // sleep the CPU until the timer says it's time for the next frame (~60 fps)
+        while TICKS.load(Relaxed) < next {
+            x86_64::instructions::hlt();
+        }
+        next = TICKS.load(Relaxed) + 16;
 
+        if key_down(0x4B) { px -= 6; } // left
+        if key_down(0x4D) { px += 6; } // right
+        if key_down(0x48) { py -= 6; } // up
+        if key_down(0x50) { py += 6; } // down
+        px = px.clamp(0, (s.width - size) as i32);
+        py = py.clamp(16, (s.height - size) as i32);
+        if key_down(0x2E) {
+            // 'C': deliberately touch unmapped memory to see the crash screen
+            unsafe { (0x1000_0000_0000usize as *mut u8).write_volatile(1) };
+        }
+
+        s.clear(bg);
+        s.text(4, 4, &alloc::format!("ticks {}  last scancode {:#04x}  arrows move, C crashes", TICKS.load(Relaxed), LAST_SCANCODE.load(Relaxed)), 0xffffff, 1);
         x += dx;
         y += dy;
         if x < 0 || x as usize + size >= s.width { dx = -dx; x += dx; }
-        if y < 0 || y as usize + size >= s.height { dy = -dy; y += dy; }
+        if y < 16 || y as usize + size >= s.height { dy = -dy; y += dy; }
         s.rect(x as usize, y as usize, size, size, 0xffa000);
+        s.rect(px as usize, py as usize, size, size, 0x40e0ff);
         s.present();
-        for _ in 0..2_000_000 { core::hint::spin_loop(); }
     }
 }
 

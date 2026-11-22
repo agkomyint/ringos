@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 uefi = { version = "0.41", features = ["panic_handler", "logger"] }
+x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
+font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }

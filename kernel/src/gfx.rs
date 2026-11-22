@@ -76,3 +76,21 @@ impl Screen {
         }
     }
 }
+
+impl Screen {
+    /// Draw ASCII text with the built-in 8x8 font, each font pixel becoming a `scale`x`scale` block.
+    pub fn text(&mut self, x: usize, y: usize, s: &str, c: Color, scale: usize) {
+        let mut cx = x;
+        for ch in s.chars() {
+            let glyph = font8x8::legacy::BASIC_LEGACY.get(ch as usize).copied().unwrap_or([0; 8]);
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..8 {
+                    if bits >> col & 1 == 1 {
+                        self.rect(cx + col * scale, y + row * scale, scale, scale, c);
+                    }
+                }
+            }
+            cx += 8 * scale;
+        }
+    }
+}
