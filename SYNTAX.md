@@ -35,7 +35,7 @@ Functions see only their parameters, not the program's variables. To share game 
 
 ## Arrays
 ```
-a = new 10              10 cells, all 0 (up to 1,048,576)
+a = new 10              10 cells, all 0 (up to 262,144; 1,048,576 cells in all)
 a[0] = 5                index from 0; out of range stops the game with an error
 mouth a[0] + size a
 b = bytes 4             cells that keep only the low 8 bits: b{0} = 300 stores 44
@@ -59,6 +59,9 @@ scope                   arrays made inside the indented block are freed when it 
 | `time()` | milliseconds since the game started |
 | `rnd(n)` | random number from 0 to n-1 |
 | `width()`, `height()` | 320, 200 |
+| `beep(hz, ms)` | a square-wave tone on the PC speaker (`beep(0, 0)` = silence) |
+| `save(slot, n)` | keep a number (slot 0-7, per game) across reboots: high scores |
+| `load(slot)` | read it back (0 if never saved) |
 
 Colours 0-15: black, blue, green, cyan, red, magenta, brown, light gray, dark gray, light blue,
 light green, light cyan, light red, light magenta, yellow, white. Bigger numbers are raw 0xRRGGBB.

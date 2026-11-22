@@ -4,6 +4,7 @@ dx = 3
 dy = 2
 px = 140
 score = 0
+best = load(0)
 heart 1 == 1
   clear(0)
   if key(0)
@@ -25,14 +26,21 @@ heart 1 == 1
   if y + 12 >= 186 and y + 12 <= 194 and x + 12 > px and x < px + 40
     dy = -2
     score = score + 1
+    beep(660, 30)
+    if score > best
+      best = score
+      save(0, best)
   if y > 200
     x = 160
     y = 60
     dy = 2
     score = 0
+    beep(150, 200)
   rect(0, 12, 320, 1, 8)
   rect(x, y, 12, 12, 14)
   rect(px, 190, 40, 6, 11)
   text(4, 2, "BOUNCE", 10)
   num(100, 2, score, 15)
+  text(200, 2, "BEST", 15)
+  num(240, 2, best, 15)
   frame()

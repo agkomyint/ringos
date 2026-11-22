@@ -9,7 +9,7 @@ Windows is not a target: the old `ringc` compiler is only on the `windows-legacy
 - `compiler/` (`ringcc`) - Ring source -> bytecode (lexer, parser, code generator). Runs on the host today.
 - `vm/` (`ringvm`) - no_std bytecode VM and the `Host` trait. Sandboxed: bounds-checked arrays, capped recursion/memory.
 - `kernel/` - UEFI boot, memory, framebuffer (`gfx`), interrupts/keyboard/timer, the gallery and VM host (`arcade`).
-- `xtask/` - `cargo run` compiles `games/*.ring` and builds `target/ringos.img`.
+- `xtask/` - `cargo run` compiles `games/*.ring` and builds `target/ringos.img` (raw disk: write to a USB stick) and `target/ringos.iso` (El Torito UEFI CD).
 - `games/` - preinstalled games (copied to `\games\*.rbc` on the disk). `examples/` - small language samples.
 - `run.ps1` - builds, then boots the image in VirtualBox (EFI).
 

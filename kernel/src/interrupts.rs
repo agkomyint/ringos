@@ -236,3 +236,32 @@ extern "C" fn crash_handler(frame: *const u64, error_code: u64, kind: u64) -> ! 
         x86_64::instructions::hlt();
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// PC speaker. PIT channel 2 divides the 1.19 MHz clock down to an audible square wave, and
+// bits 0-1 of port 0x61 connect it to the speaker (bit 0: gate the timer, bit 1: speaker on).
+pub fn speaker_tone(freq: u32) {
+    if freq < 20 || freq > 20_000 {
+        speaker_off();
+        return;
+    }
+    let div = (1_193_182 / freq).clamp(1, 65535) as u16;
+    unsafe {
+        let mut cmd: Port<u8> = Port::new(0x43);
+        let mut ch2: Port<u8> = Port::new(0x42);
+        cmd.write(0xB6); // channel 2, lo/hi byte, square wave
+        ch2.write((div & 0xff) as u8);
+        ch2.write((div >> 8) as u8);
+        let mut gate: Port<u8> = Port::new(0x61);
+        let v = gate.read();
+        gate.write(v | 0b11);
+    }
+}
+
+pub fn speaker_off() {
+    unsafe {
+        let mut gate: Port<u8> = Port::new(0x61);
+        let v = gate.read();
+        gate.write(v & !0b11);
+    }
+}

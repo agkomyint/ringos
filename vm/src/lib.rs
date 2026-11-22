@@ -71,6 +71,9 @@ pub const INTRINSICS: &[(&str, usize)] = &[
     ("rnd", 1),    // rnd(n): a random number from 0 to n-1
     ("width", 0),  // screen width in pixels
     ("height", 0), // screen height in pixels
+    ("beep", 2),   // beep(freq_hz, ms): a square-wave tone, 0 Hz = silence
+    ("load", 1),   // load(slot): a saved number (slot 0-7, per game; 0 if never saved)
+    ("save", 2),   // save(slot, n): keep a number across reboots (high scores)
 ];
 
 pub trait Host {
@@ -89,6 +92,12 @@ pub trait Host {
     fn should_quit(&mut self) -> bool;
     /// `mouth` output.
     fn print(&mut self, s: &str);
+    /// Sound and storage are optional: a host without them just ignores the calls.
+    fn beep(&mut self, _freq: i64, _ms: i64) {}
+    fn load(&mut self, _slot: i64) -> i64 {
+        0
+    }
+    fn save(&mut self, _slot: i64, _value: i64) {}
 }
 
 // ---------------------------------------------------------------------------------------
@@ -198,9 +207,9 @@ pub enum Exit {
 }
 
 const MAX_FRAMES: usize = 4000;
-const MAX_STACK: usize = 1 << 18;
-const MAX_ARRAY: i64 = 1 << 20; // cells
-const MAX_ARRAY_TOTAL: usize = 1 << 22; // cells across all live arrays
+const MAX_STACK: usize = 1 << 16; // 512 KiB; the stack grows on demand
+const MAX_ARRAY: i64 = 1 << 18; // cells (2 MiB)
+const MAX_ARRAY_TOTAL: usize = 1 << 20; // cells across all live arrays (8 MiB)
 
 struct Frame {
     ret_pc: usize,
@@ -573,6 +582,15 @@ impl<'p> Vm<'p> {
             }
             9 => host.width(),
             10 => host.height(),
+            11 => {
+                host.beep(a[0], a[1]);
+                0
+            }
+            12 => host.load(a[0]),
+            13 => {
+                host.save(a[0], a[1]);
+                0
+            }
             _ => return Err(VmError::BadProgram),
         }))
     }

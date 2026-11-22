@@ -425,3 +425,63 @@ mod example_programs {
         }
     }
 }
+
+#[cfg(test)]
+mod game_smoke {
+    use ringvm::{Host, Vm};
+
+    struct Bot {
+        frames: u32,
+        seed: u32,
+        saves: u32,
+        beeps: u32,
+    }
+    impl Host for Bot {
+        fn clear(&mut self, _: i64) {}
+        fn rect(&mut self, _: i64, _: i64, _: i64, _: i64, _: i64) {}
+        fn pixel(&mut self, _: i64, _: i64, _: i64) {}
+        fn text(&mut self, _: i64, _: i64, _: &[u8], _: i64) {}
+        fn num(&mut self, _: i64, _: i64, _: i64, _: i64) {}
+        fn key(&mut self, k: i64) -> bool {
+            self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (self.seed >> 16) % 3 == (k as u32 % 3)
+        }
+        fn frame(&mut self) -> bool {
+            self.frames += 1;
+            self.frames < 3000
+        }
+        fn time(&mut self) -> i64 {
+            0
+        }
+        fn width(&mut self) -> i64 {
+            320
+        }
+        fn height(&mut self) -> i64 {
+            200
+        }
+        fn should_quit(&mut self) -> bool {
+            false
+        }
+        fn print(&mut self, _: &str) {}
+        fn beep(&mut self, _: i64, _: i64) {
+            self.beeps += 1;
+        }
+        fn save(&mut self, _: i64, _: i64) {
+            self.saves += 1;
+        }
+    }
+
+    #[test]
+    fn every_game_runs_without_vm_errors() {
+        for e in std::fs::read_dir("../games").unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().map_or(false, |x| x == "ring") {
+                let prog = super::compile(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                let mut bot = Bot { frames: 0, seed: 7, saves: 0, beeps: 0 };
+                let r = Vm::new(&prog, 42).run(&mut bot);
+                assert!(r.is_ok(), "{}: {:?}", p.display(), r);
+                println!("{}: frames {} beeps {} saves {}", p.display(), bot.frames, bot.beeps, bot.saves);
+            }
+        }
+    }
+}

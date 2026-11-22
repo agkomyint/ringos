@@ -80,8 +80,13 @@ impl Screen {
 impl Screen {
     /// Draw ASCII text with the built-in 8x8 font, each font pixel becoming a `scale`x`scale` block.
     pub fn text(&mut self, x: usize, y: usize, s: &str, c: Color, scale: usize) {
+        self.text_chars(x, y, s.chars(), c, scale);
+    }
+
+    /// Draw characters straight from an iterator: no temporary String needed.
+    pub fn text_chars(&mut self, x: usize, y: usize, chars: impl Iterator<Item = char>, c: Color, scale: usize) {
         let mut cx = x;
-        for ch in s.chars() {
+        for ch in chars {
             let glyph = font8x8::legacy::BASIC_LEGACY.get(ch as usize).copied().unwrap_or([0; 8]);
             for (row, bits) in glyph.iter().enumerate() {
                 for col in 0..8 {

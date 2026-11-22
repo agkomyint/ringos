@@ -14,6 +14,8 @@ fy = rnd(18)
 score = 0
 over = 0
 tick = 0
+best = load(0)
+saved = 0
 heart 1 == 1
   clear(0)
   if over == 0
@@ -45,6 +47,7 @@ heart 1 == 1
         if nx == fx and ny == fy
           len = len + 1
           score = score + 1
+          beep(880, 50)
           fx = rnd(32)
           fy = rnd(18)
         i = len - 1
@@ -61,9 +64,18 @@ heart 1 == 1
   rect(fx * 10, 20 + fy * 10, 9, 9, 12)
   text(4, 6, "SNAKE", 14)
   num(60, 6, score, 15)
+  text(200, 6, "BEST", 15)
+  num(240, 6, best, 15)
   if over == 1
     text(72, 90, "GAME OVER - A to retry", 15)
+    if saved == 0
+      saved = 1
+      beep(150, 300)
+      if score > best
+        best = score
+        save(0, best)
     if key(4)
+      saved = 0
       len = 3
       tx[0] = 10
       ty[0] = 9

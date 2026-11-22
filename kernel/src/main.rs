@@ -7,6 +7,7 @@ mod arcade;
 mod gfx;
 mod heap;
 mod interrupts;
+mod store;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -17,7 +18,7 @@ use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
 
 #[global_allocator]
-static HEAP: heap::Bump = heap::Bump::empty();
+static HEAP: heap::Heap = heap::Heap::empty();
 
 const HEAP_BYTES: usize = 64 * 1024 * 1024;
 
@@ -49,7 +50,7 @@ fn main() -> Status {
     // ---- 2. Claim part of it for ourselves (so nobody else gets it).
     let take = (HEAP_BYTES as u64 / 4096).min(pages);
     let heap_ptr = boot::allocate_pages(AllocateType::Address(start), MemoryType::LOADER_DATA, take as usize).unwrap();
-    unsafe { HEAP.init(heap_ptr.as_ptr() as usize, (take * 4096) as usize) };
+    unsafe { HEAP.lock().init(heap_ptr.as_ptr(), (take * 4096) as usize) };
     uefi::println!("  heap: {} MiB claimed. Taking over...", take * 4 / 1024);
     boot::stall(Duration::from_secs(1));
 
