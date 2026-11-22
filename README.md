@@ -22,3 +22,8 @@ See `SYNTAX.md` for the language and `games/` for examples.
 - VirtualBox: `./run.ps1`, or attach `target/ringos.iso` to an EFI-enabled VM.
 - Real PC (UEFI, Secure Boot off): write `target/ringos.img` to a USB stick (Rufus "DD image" mode, or `dd`), boot from it.
 - Sound uses the PC speaker; high scores live in UEFI NVRAM (`save`/`load` in Ring).
+
+## Licence
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for personal, educational and
+research use, **not for commercial use**. Buying RingOS hardware or a commercial licence is covered in
+[COMMERCIAL.md](COMMERCIAL.md). Games you write in Ring are yours.
