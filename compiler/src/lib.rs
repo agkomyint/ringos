@@ -31,7 +31,12 @@ pub fn compile(src: &str) -> Result<Program, String> {
     g.code.push(op::HALT);
     funcs.push(Func { entry, nparams: 0, nvars: ast.names.len() as u16 });
     let main = (funcs.len() - 1) as u16;
-    Ok(Program { funcs, strings: g.strings, code: g.code, main })
+    let prog = Program { funcs, strings: g.strings, code: g.code, main };
+    let size = prog.to_bytes().len();
+    if size > ringvm::MAX_PROGRAM_BYTES {
+        return Err(format!("game is {size} bytes; the limit is {} (16 KB)", ringvm::MAX_PROGRAM_BYTES));
+    }
+    Ok(prog)
 }
 
 struct Gen {
@@ -43,8 +48,16 @@ type R = Result<(), String>;
 
 impl Gen {
     fn push_i(&mut self, v: i64) {
-        self.code.push(op::PUSH);
-        self.code.extend_from_slice(&v.to_le_bytes());
+        if let Ok(b) = i8::try_from(v) {
+            self.code.push(op::PUSH8);
+            self.code.push(b as u8);
+        } else if let Ok(w) = i16::try_from(v) {
+            self.code.push(op::PUSH16);
+            self.code.extend_from_slice(&w.to_le_bytes());
+        } else {
+            self.code.push(op::PUSH);
+            self.code.extend_from_slice(&v.to_le_bytes());
+        }
     }
     fn u16(&mut self, o: u8, v: u16) {
         self.code.push(o);
@@ -191,6 +204,16 @@ impl Gen {
                     self.expr(a)?;
                 }
                 self.u16(op::CALL, *f as u16);
+            }
+            Expr::Intr(3, args) if matches!(args.get(2), Some(Expr::Lit(_))) => {
+                // text(x, y, "literal", c): draw straight from the program's string table.
+                // Making a fresh array for the literal on every call would leak one per frame.
+                let Expr::Lit(t) = &args[2] else { unreachable!() };
+                let i = self.string(t)?;
+                self.expr(&args[0])?;
+                self.expr(&args[1])?;
+                self.expr(&args[3])?;
+                self.u16(op::TEXTLIT, i);
             }
             Expr::Intr(id, args) => {
                 for a in args {
@@ -423,6 +446,75 @@ mod example_programs {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod limits {
+    use ringvm::{Host, Vm, VmError};
+    struct Nop;
+    impl Host for Nop {
+        fn clear(&mut self, _: i64) {}
+        fn rect(&mut self, _: i64, _: i64, _: i64, _: i64, _: i64) {}
+        fn pixel(&mut self, _: i64, _: i64, _: i64) {}
+        fn text(&mut self, _: i64, _: i64, _: &[u8], _: i64) {}
+        fn num(&mut self, _: i64, _: i64, _: i64, _: i64) {}
+        fn key(&mut self, _: i64) -> bool {
+            false
+        }
+        fn frame(&mut self) -> bool {
+            true
+        }
+        fn time(&mut self) -> i64 {
+            0
+        }
+        fn width(&mut self) -> i64 {
+            320
+        }
+        fn height(&mut self) -> i64 {
+            200
+        }
+        fn should_quit(&mut self) -> bool {
+            false
+        }
+        fn print(&mut self, _: &str) {}
+    }
+    fn run(src: &str) -> Result<ringvm::Exit, VmError> {
+        Vm::new(&super::compile(src).unwrap(), 1).run(&mut Nop)
+    }
+    #[test]
+    fn sixteen_kb_is_a_hard_limit() {
+        assert!(run("a = new 2000
+").is_ok()); // 16000 bytes
+        assert_eq!(run("a = new 2100
+").unwrap_err(), VmError::OutOfMemory); // 16800 bytes
+        assert!(run("a = bytes 16000
+").is_ok());
+        assert_eq!(run("a = bytes 20000
+").unwrap_err(), VmError::OutOfMemory);
+        assert_eq!(run("a = bytes 9000
+b = bytes 9000
+").unwrap_err(), VmError::OutOfMemory);
+        // unbounded recursion hits the same wall instead of eating the machine
+        assert_eq!(run("f n
+  back f(n + 1)
+mouth f(0)
+").unwrap_err(), VmError::StackOverflow);
+        // a leaking loop (arrays made and never freed) is stopped too
+        assert_eq!(run("i = 0
+heart i < 100000
+  a = new 100
+  i = i + 1
+").unwrap_err(), VmError::OutOfMemory);
+    }
+    #[test]
+    fn oversized_programs_are_refused() {
+        let mut src = String::new();
+        for i in 0..3000 {
+            src.push_str(&format!("x{i} = {}
+", i * 1000 + 100000));
+        }
+        assert!(super::compile(&src).err().expect("should refuse").contains("limit"));
     }
 }
 

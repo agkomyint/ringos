@@ -223,12 +223,13 @@ extern "C" fn crash_handler(frame: *const u64, error_code: u64, kind: u64) -> ! 
     };
     unsafe {
         if let Some(s) = (*addr_of_mut!(SCREEN)).as_mut() {
-            s.clear(0xa00000);
-            s.text(32, 32, "RingOS CRASH", 0xffffff, 4);
-            s.text(32, 100, what, 0xffffff, 2);
-            s.text(32, 140, &format!("RIP   {:#x}", rip), 0xffffff, 2);
-            s.text(32, 170, &format!("INFO  {:#x}", info), 0xffffff, 2);
-            s.text(32, 200, &format!("kind {} err {:#x} cs {:#x} rsp {:#x}", kind, error_code, *frame.add(1), *frame.add(3)), 0xffffff, 2);
+            s.clear(4);
+            s.text(8, 8, "RingOS CRASH", 15, 2);
+            s.text(8, 40, what, 15, 1);
+            s.text(8, 56, &format!("RIP   {:#x}", rip), 15, 1);
+            s.text(8, 68, &format!("INFO  {:#x}", info), 15, 1);
+            s.text(8, 80, &format!("kind {} err {:#x}", kind, error_code), 15, 1);
+            s.text(8, 92, &format!("cs {:#x} rsp {:#x}", *frame.add(1), *frame.add(3)), 15, 1);
             s.present();
         }
     }

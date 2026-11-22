@@ -20,7 +20,9 @@ use uefi::proto::console::gop::GraphicsOutput;
 #[global_allocator]
 static HEAP: heap::Heap = heap::Heap::empty();
 
-const HEAP_BYTES: usize = 64 * 1024 * 1024;
+/// Canvas 64 KB + one game's 16 KB + the loaded programs (about 1 KB each). 512 KiB leaves room
+/// for hundreds of games.
+const HEAP_BYTES: usize = 512 * 1024;
 
 #[entry]
 fn main() -> Status {
@@ -92,7 +94,7 @@ fn load_games() -> Vec<arcade::Game> {
         let path = PathBuf::from(full);
         let Ok(bytes) = fs.read(&path) else { continue };
         if let Ok(program) = ringvm::Program::from_bytes(&bytes) {
-            games.push(arcade::Game { name: stem.to_string(), program });
+            games.push(arcade::Game { name: stem.to_string(), program, size: bytes.len() });
         }
     }
     games.sort_by(|a, b| a.name.cmp(&b.name));

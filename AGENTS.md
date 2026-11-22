@@ -20,3 +20,10 @@ cargo run                          # build target\ringos.img
 .\run.ps1                          # boot it in VirtualBox
 ```
 Adding a game: drop `games/name.ring`, rebuild. New language features need a VM op + compiler support + a test + SYNTAX.md.
+
+## Memory budget (a design goal, not an accident)
+- Ring games: 16 KB compiled + 16 KB working memory, enforced in `vm/src/lib.rs` (`MEM_LIMIT`, `MAX_PROGRAM_BYTES`)
+  and tested in `compiler/src/lib.rs` (`limits`). Do not raise these; make things smaller instead.
+- Kernel heap is 512 KiB (`HEAP_BYTES`); the gallery shows live heap use. Today: ~72 KB with 6 games
+  (64 KB of that is the 320x200 8-bit canvas). Never call `format!`/allocate while holding `HEAP.lock()`.
+- No full-resolution back buffer: games draw on the 320x200 canvas and `Screen::present` scales it.

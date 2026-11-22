@@ -54,6 +54,9 @@ pub mod op {
     pub const KEEP: u8 = 34;
     pub const INTR: u8 = 35; // u8 intrinsic number
     pub const HALT: u8 = 36;
+    pub const PUSH8: u8 = 38; // i8: small numbers cost 2 bytes instead of 9
+    pub const PUSH16: u8 = 39; // i16
+    pub const TEXTLIT: u8 = 37; // u16 string number; pop colour, y, x: draw that literal text (no array made)
 }
 
 /// The built-in "arcade" functions: (name, number of arguments). The index is the id in INTR.
@@ -138,6 +141,9 @@ impl Program {
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Program, &'static str> {
+        if b.len() > MAX_PROGRAM_BYTES {
+            return Err("game is over the 16 KB limit");
+        }
         struct R<'a>(&'a [u8], usize);
         impl<'a> R<'a> {
             fn take(&mut self, n: usize) -> Result<&'a [u8], &'static str> {
@@ -193,8 +199,8 @@ impl VmError {
         match self {
             VmError::DivideByZero => "divided by zero",
             VmError::BadArray => "bad array use (freed, missing, or index out of range)",
-            VmError::OutOfMemory => "out of memory",
-            VmError::StackOverflow => "too much recursion",
+            VmError::OutOfMemory => "over the 16 KB memory limit",
+            VmError::StackOverflow => "over the 16 KB memory limit (stack)",
             VmError::BadProgram => "corrupt program",
         }
     }
@@ -206,10 +212,49 @@ pub enum Exit {
     Quit,
 }
 
-const MAX_FRAMES: usize = 4000;
-const MAX_STACK: usize = 1 << 16; // 512 KiB; the stack grows on demand
-const MAX_ARRAY: i64 = 1 << 18; // cells (2 MiB)
-const MAX_ARRAY_TOTAL: usize = 1 << 20; // cells across all live arrays (8 MiB)
+/// THE LIMITS. A Ring game is a few KiB of bytecode plus at most 16 KiB of working memory,
+/// so a whole arcade of them fits on a very small machine. Working memory = live arrays
+/// (8 bytes per word cell, 1 per byte cell) + value stack (8 per value) + call frames (16 each).
+pub const MEM_LIMIT: usize = 16 * 1024;
+/// The compiled game file (.rbc) may not be bigger than this either.
+pub const MAX_PROGRAM_BYTES: usize = 16 * 1024;
+const MAX_ARRAY: i64 = MEM_LIMIT as i64; // sanity cap on one `new n`; the byte budget below does the real work
+const MAX_ARRAY_TOTAL: usize = MEM_LIMIT;
+
+/// Array storage. Word arrays use 8 bytes per cell; byte arrays (text, `bytes n`) use 1.
+enum Cells {
+    W(Vec<i64>),
+    B(Vec<u8>),
+}
+
+impl Cells {
+    fn len(&self) -> usize {
+        match self {
+            Cells::W(v) => v.len(),
+            Cells::B(v) => v.len(),
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            Cells::W(v) => v.len() * 8,
+            Cells::B(v) => v.len(),
+        }
+    }
+    fn get(&self, i: usize) -> Option<i64> {
+        match self {
+            Cells::W(v) => v.get(i).copied(),
+            Cells::B(v) => v.get(i).map(|&b| b as i64),
+        }
+    }
+    /// Byte arrays keep only the low 8 bits, whichever store instruction is used.
+    fn set(&mut self, i: usize, x: i64) -> Option<()> {
+        match self {
+            Cells::W(v) => *v.get_mut(i)? = x,
+            Cells::B(v) => *v.get_mut(i)? = x as u8,
+        }
+        Some(())
+    }
+}
 
 struct Frame {
     ret_pc: usize,
@@ -221,7 +266,7 @@ pub struct Vm<'p> {
     stack: Vec<i64>,
     frames: Vec<Frame>,
     /// handle h (> 0) names arrays[h-1]; None = freed
-    arrays: Vec<Option<Vec<i64>>>,
+    arrays: Vec<Option<Cells>>,
     free_handles: Vec<usize>,
     live_cells: usize,
     /// allocation log for `scope`: handles made since each scope opened
@@ -257,11 +302,16 @@ impl<'p> Vm<'p> {
         x
     }
 
-    fn alloc(&mut self, cells: Vec<i64>) -> Result<i64, VmError> {
-        if self.live_cells + cells.len() > MAX_ARRAY_TOTAL {
+    /// Bytes of working memory in use right now.
+    pub fn used(&self) -> usize {
+        self.live_cells + self.stack.len() * 8 + self.frames.len() * 16
+    }
+
+    fn alloc(&mut self, cells: Cells) -> Result<i64, VmError> {
+        if self.used() + cells.bytes() > MAX_ARRAY_TOTAL {
             return Err(VmError::OutOfMemory);
         }
-        self.live_cells += cells.len();
+        self.live_cells += cells.bytes();
         let slot = match self.free_handles.pop() {
             Some(s) => {
                 self.arrays[s] = Some(cells);
@@ -280,7 +330,7 @@ impl<'p> Vm<'p> {
 
     fn release(&mut self, slot: usize) -> bool {
         if let Some(a) = self.arrays.get_mut(slot).and_then(|a| a.take()) {
-            self.live_cells -= a.len();
+            self.live_cells -= a.bytes();
             self.free_handles.push(slot);
             true
         } else {
@@ -288,14 +338,14 @@ impl<'p> Vm<'p> {
         }
     }
 
-    fn arr(&self, h: i64) -> Result<&Vec<i64>, VmError> {
+    fn arr(&self, h: i64) -> Result<&Cells, VmError> {
         if h <= 0 {
             return Err(VmError::BadArray);
         }
         self.arrays.get(h as usize - 1).and_then(|a| a.as_ref()).ok_or(VmError::BadArray)
     }
 
-    fn arr_mut(&mut self, h: i64) -> Result<&mut Vec<i64>, VmError> {
+    fn arr_mut(&mut self, h: i64) -> Result<&mut Cells, VmError> {
         if h <= 0 {
             return Err(VmError::BadArray);
         }
@@ -345,13 +395,21 @@ impl<'p> Vm<'p> {
             if budget & 0xffff == 0 && host.should_quit() {
                 return Ok(Exit::Quit);
             }
-            if self.stack.len() > MAX_STACK {
+            if self.stack.len() * 8 + self.frames.len() * 16 + self.live_cells > MEM_LIMIT {
                 return Err(VmError::StackOverflow);
             }
             let opcode = self.u8()?;
             match opcode {
                 op::PUSH => {
                     let v = self.i64()?;
+                    self.stack.push(v);
+                }
+                op::PUSH8 => {
+                    let v = self.u8()? as i8 as i64;
+                    self.stack.push(v);
+                }
+                op::PUSH16 => {
+                    let v = self.u16()? as i16 as i64;
                     self.stack.push(v);
                 }
                 op::LOAD => {
@@ -409,9 +467,6 @@ impl<'p> Vm<'p> {
                 op::CALL => {
                     let f = self.u16()? as usize;
                     let func = self.prog.funcs.get(f).ok_or(VmError::BadProgram)?;
-                    if self.frames.len() >= MAX_FRAMES {
-                        return Err(VmError::StackOverflow);
-                    }
                     let base = self.stack.len().checked_sub(func.nparams as usize).ok_or(VmError::BadProgram)?;
                     self.stack.resize(base + func.nvars as usize, 0);
                     self.frames.push(Frame { ret_pc: self.pc, base });
@@ -444,14 +499,15 @@ impl<'p> Vm<'p> {
                     if !(0..=MAX_ARRAY).contains(&n) {
                         return Err(VmError::OutOfMemory);
                     }
-                    let h = self.alloc(alloc::vec![0; n as usize])?;
+                    // check the budget before allocating so a huge `new` fails cleanly
+                    let cells = if opcode == op::NEWB { Cells::B(alloc::vec![0; n as usize]) } else { Cells::W(alloc::vec![0; n as usize]) };
+                    let h = self.alloc(cells)?;
                     self.stack.push(h);
                 }
                 op::LIT => {
                     let i = self.u16()? as usize;
                     let s = self.prog.strings.get(i).ok_or(VmError::BadProgram)?;
-                    let cells: Vec<i64> = s.iter().map(|&b| b as i64).collect();
-                    let h = self.alloc(cells)?;
+                    let h = self.alloc(Cells::B(s.clone()))?;
                     self.stack.push(h);
                 }
                 op::INDEX | op::BINDEX => {
@@ -461,7 +517,7 @@ impl<'p> Vm<'p> {
                     if i < 0 {
                         return Err(VmError::BadArray);
                     }
-                    let v = *a.get(i as usize).ok_or(VmError::BadArray)?;
+                    let v = a.get(i as usize).ok_or(VmError::BadArray)?;
                     self.stack.push(v);
                 }
                 op::STOREIDX | op::BSTOREIDX => {
@@ -472,8 +528,7 @@ impl<'p> Vm<'p> {
                     if i < 0 {
                         return Err(VmError::BadArray);
                     }
-                    let cell = a.get_mut(i as usize).ok_or(VmError::BadArray)?;
-                    *cell = if opcode == op::BSTOREIDX { v & 0xff } else { v };
+                    a.set(i as usize, if opcode == op::BSTOREIDX { v & 0xff } else { v }).ok_or(VmError::BadArray)?;
                 }
                 op::SIZE => {
                     let h = self.pop()?;
@@ -518,6 +573,15 @@ impl<'p> Vm<'p> {
                         None => return Ok(Exit::Quit),
                     }
                 }
+                op::TEXTLIT => {
+                    let i = self.u16()? as usize;
+                    let c = self.pop()?;
+                    let y = self.pop()?;
+                    let x = self.pop()?;
+                    let t = self.prog.strings.get(i).ok_or(VmError::BadProgram)?;
+                    host.text(x, y, t, c);
+                    self.stack.push(0);
+                }
                 op::HALT => return Ok(Exit::Done),
                 _ => return Err(VmError::BadProgram),
             }
@@ -557,8 +621,13 @@ impl<'p> Vm<'p> {
                 0
             }
             3 => {
-                let bytes: Vec<u8> = self.arr(a[2])?.iter().map(|&c| c as u8).collect();
-                host.text(a[0], a[1], &bytes, a[3]);
+                match self.arr(a[2])? {
+                    Cells::B(v) => host.text(a[0], a[1], v, a[3]), // no copy
+                    Cells::W(v) => {
+                        let bytes: Vec<u8> = v.iter().map(|&c| c as u8).collect();
+                        host.text(a[0], a[1], &bytes, a[3]);
+                    }
+                }
                 0
             }
             4 => {
