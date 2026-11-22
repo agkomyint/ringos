@@ -17,23 +17,14 @@ pub enum Expr {
     Neg(Box<Expr>),                  // -x
     Bin(char, Box<Expr>, Box<Expr>), // a + b, a * b, ...
     Call(usize, Vec<Expr>),          // add(1, 2)   (function number, arguments)
-    Ear,                             // ear: read a number from the keyboard / pipe
     New(Box<Expr>),                  // new n: a fresh zeroed array of n cells (its address)
     Index(Box<Expr>, Box<Expr>),     // a[i]: cell i of array a (checked)
     Lit(String),                     // "text": a bytes array holding the text
-    Hear,                            // hear: the next line of input as a bytes array (0 at end of input)
     Size(Box<Expr>),                 // size a: the length of an array
-    Same(Box<Expr>, Box<Expr>),      // same a b: 1 if both arrays hold the same bytes
-    Join(Box<Expr>, Box<Expr>),      // join a b: a new array, a followed by b
     Keep(Box<Expr>),                 // keep a: a stays alive after its scope ends (value a)
     ScopeOpen,                       // made by `scope`: start logging allocations
     ScopeClose,                      // made by `scope`: free everything allocated since ScopeOpen
     Free(Box<Expr>),                 // free a: give an array back (value 0)
-    Net(u8, Box<Expr>, Box<Expr>),   // networking: 0 listen port, 1 wait srv, 2 recv c, 3 send c data, 4 close c
-    Gui(u8, Vec<Expr>),              // native window: 0 window title w h, 1 button text x y w h id, 2 label text x y w h id, 3 event, 4 settext id text
-    Voice(Box<Expr>),                // voice a: print a bytes array as text (value 0)
-    ReadF(String),                   // read "f": the file's bytes as a bytes array
-    SaveF(String, Box<Expr>),        // save "f" a: write a bytes array to a file (value 0)
     NewB(Box<Expr>),                 // bytes n: a fresh zeroed array of n bytes
     BIndex(Box<Expr>, Box<Expr>),    // a{i}: byte i of a bytes array (checked)
     Intr(u8, Vec<Expr>),             // RingOS arcade built-in: rect(...), key(...), frame() ... (see ringvm::INTRINSICS)
@@ -80,7 +71,9 @@ fn power(op: char) -> u8 {
     }
 }
 
-const KEYWORDS: [&str; 32] = ["mouth", "if", "else", "heart", "back", "ear", "new", "bytes", "eye", "hand", "voice", "hear", "size", "same", "join", "free", "scope", "keep", "listen", "wait", "recv", "send", "close", "sendfile", "filesize", "window", "button", "label", "event", "settext", "edit", "gettext"];
+const KEYWORDS: [&str; 10] = ["mouth", "if", "else", "heart", "back", "new", "bytes", "size", "free", "scope"];
+/// Words from older Ring versions (typed input, files, windows, network): refused with a clear message.
+const RETIRED: [&str; 21] = ["ear", "hear", "eye", "hand", "voice", "same", "join", "listen", "wait", "recv", "send", "close", "sendfile", "filesize", "window", "button", "label", "event", "settext", "edit", "gettext"];
 
 struct Parser {
     toks: Vec<(Tok, usize)>,
@@ -145,76 +138,17 @@ impl Parser {
             Tok::Ident(name) => {
                 let name = name.clone();
                 self.next();
-                if name == "ear" {
-                    return Ok(Expr::Ear);
-                }
-                if name == "same" || name == "join" {
-                    let a = Box::new(self.atom()?);
-                    let b = Box::new(self.atom()?);
-                    return Ok(if name == "same" { Expr::Same(a, b) } else { Expr::Join(a, b) });
-                }
-                if name == "hear" {
-                    return Ok(Expr::Hear);
+                if RETIRED.contains(&name.as_str()) {
+                    return Err(format!("'{name}' is not part of Ring on RingOS (see SYNTAX.md) at {pos}"));
                 }
                 if name == "size" {
                     return Ok(Expr::Size(Box::new(self.atom()?)));
                 }
-                if name == "voice" {
-                    return Ok(Expr::Voice(Box::new(self.expr(1)?)));
-                }
                 if name == "keep" {
                     return Ok(Expr::Keep(Box::new(self.expr(1)?)));
                 }
-                if matches!(name.as_str(), "listen" | "wait" | "recv" | "close") {
-                    let op = match name.as_str() { "listen" => 0, "wait" => 1, "recv" => 2, _ => 4 };
-                    return Ok(Expr::Net(op, Box::new(self.expr(1)?), Box::new(Expr::Num(0))));
-                }
-                if name == "send" || name == "sendfile" {
-                    let a = Box::new(self.atom()?);
-                    let b = Box::new(self.atom()?);
-                    return Ok(Expr::Net(if name == "send" { 3 } else { 5 }, a, b));
-                }
-                if name == "filesize" {
-                    return Ok(Expr::Net(6, Box::new(self.expr(1)?), Box::new(Expr::Num(0))));
-                }
-                if name == "window" {
-                    let t = self.atom()?;
-                    let w = self.atom()?;
-                    let h = self.atom()?;
-                    return Ok(Expr::Gui(0, vec![t, w, h]));
-                }
-                if name == "button" || name == "label" || name == "edit" {
-                    let op = if name == "button" { 1 } else if name == "label" { 2 } else { 5 };
-                    let mut args = Vec::new();
-                    for _ in 0..6 {
-                        args.push(self.atom()?);
-                    }
-                    return Ok(Expr::Gui(op, args));
-                }
-                if name == "event" {
-                    return Ok(Expr::Gui(3, Vec::new()));
-                }
-                if name == "settext" {
-                    let a = self.atom()?;
-                    let b = self.atom()?;
-                    return Ok(Expr::Gui(4, vec![a, b]));
-                }
-                if name == "gettext" {
-                    return Ok(Expr::Gui(6, vec![self.atom()?]));
-                }
                 if name == "free" {
                     return Ok(Expr::Free(Box::new(self.expr(1)?)));
-                }
-                if name == "eye" || name == "hand" {
-                    let path = match self.peek() {
-                        Tok::Str(s) => s.clone(),
-                        _ => return Err(format!("'{name}' needs a file name in quotes at {pos}")),
-                    };
-                    self.next();
-                    if name == "eye" {
-                        return Ok(Expr::ReadF(path));
-                    }
-                    return Ok(Expr::SaveF(path, Box::new(self.expr(1)?)));
                 }
                 if name == "bytes" {
                     return Ok(Expr::NewB(Box::new(self.expr(1)?)));
@@ -394,7 +328,7 @@ impl Parser {
                     Ok(Stmt::Print(self.expr(1)?))
                 }
             }
-            Tok::Ident(w) if w == "hand" || w == "voice" || w == "free" || w == "keep" || w == "send" || w == "close" || w == "sendfile" || w == "window" || w == "button" || w == "label" || w == "settext" || w == "edit" => Ok(Stmt::Eval(self.expr(1)?)),
+            Tok::Ident(w) if w == "free" || w == "keep" => Ok(Stmt::Eval(self.expr(1)?)),
             Tok::Ident(w) if w == "back" => {
                 if !self.in_func {
                     return Err(format!("'back' only works inside a function (at {pos})"));

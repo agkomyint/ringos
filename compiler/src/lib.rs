@@ -234,10 +234,6 @@ impl Gen {
             Expr::ScopeClose => {
                 self.code.push(op::SCOPE_CLOSE);
             }
-            Expr::Ear | Expr::Hear => return Err("'ear'/'hear' (typed input) is not available on RingOS: use key(...)".into()),
-            Expr::Voice(_) | Expr::ReadF(_) | Expr::SaveF(..) => return Err("files and 'voice' are not available on RingOS yet".into()),
-            Expr::Net(..) | Expr::Gui(..) => return Err("network and windows are not available on RingOS (the arcade draws the screen: use rect/text)".into()),
-            Expr::Same(..) | Expr::Join(..) => return Err("'same'/'join' are not available on RingOS yet".into()),
         }
         Ok(())
     }
