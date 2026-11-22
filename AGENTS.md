@@ -8,9 +8,9 @@ Windows is not a target: the old `ringc` compiler is only on the `windows-legacy
 - `GOALS.md` - design constraints from the Ring project (small, fast, one obvious way).
 - `compiler/` (`ringcc`) - Ring source -> bytecode (lexer, parser, code generator). Runs on the host today.
 - `vm/` (`ringvm`) - no_std bytecode VM and the `Host` trait. Sandboxed: bounds-checked arrays, capped recursion/memory.
-- `kernel/` - UEFI boot, memory, framebuffer (`gfx`), interrupts/keyboard/timer, the gallery and VM host (`arcade`).
+- `kernel/` - UEFI boot, memory, framebuffer (`gfx`), keyboard polling + cycle-counter clock (`input`), disk reads (`disk`), the gallery and VM host (`arcade`).
 - `xtask/` - `cargo run` compiles `games/*.ring` and builds `target/ringos.img` (raw disk: write to a USB stick) and `target/ringos.iso` (El Torito UEFI CD).
-- `games/` - preinstalled games (copied to `\games\*.rbc` on the disk). `examples/` - small language samples.
+- `games/` - preinstalled games, packed by `xtask` into ONE file `\games.pak` (sorted index + bytecode; format in `vm/src/pak.rs`). `RING_FAKE_GAMES=N cargo run --release` adds N filler games for stress tests. `examples/` - small language samples.
 - `run.ps1` - builds, then boots the image in VirtualBox (EFI).
 
 ## Commands

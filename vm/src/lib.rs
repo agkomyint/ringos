@@ -9,6 +9,7 @@
 //! endless loop can still be quit with Esc. A buggy game ends with a `VmError`, never a crash.
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
+pub mod pak;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -57,6 +58,7 @@ pub mod op {
     pub const PUSH8: u8 = 38; // i8: small numbers cost 2 bytes instead of 9
     pub const PUSH16: u8 = 39; // i16
     pub const TEXTLIT: u8 = 37; // u16 string number; pop colour, y, x: draw that literal text (no array made)
+    pub const SPRITELIT: u8 = 40; // u16 string number; pop scale, width, y, x: draw that literal picture
 }
 
 /// The built-in "arcade" functions: (name, number of arguments). The index is the id in INTR.
@@ -77,6 +79,14 @@ pub const INTRINSICS: &[(&str, usize)] = &[
     ("beep", 2),   // beep(freq_hz, ms): a square-wave tone, 0 Hz = silence
     ("load", 1),   // load(slot): a saved number (slot 0-7, per game; 0 if never saved)
     ("save", 2),   // save(slot, n): keep a number across reboots (high scores)
+    ("sprite", 5), // sprite(x, y, "..e..", width, scale): a picture, one character per pixel (see SYNTAX.md)
+    ("abs", 1),    // abs(n)
+    ("min", 2),    // min(a, b)
+    ("max", 2),    // max(a, b)
+    ("palette", 4), // palette(colour, r, g, b): redefine one colour (each 0-255) for this game
+    ("tiles", 6),  // tiles(map, map_width, sheet, tile_size, scroll_x, scroll_y): draw a scrolling tile map
+    ("overlap", 8), // overlap(x1,y1,w1,h1, x2,y2,w2,h2): 1 if the two rectangles overlap
+    ("shake", 1),  // shake(n): jolt the next shown frame by up to n pixels
 ];
 
 pub trait Host {
@@ -101,10 +111,31 @@ pub trait Host {
         0
     }
     fn save(&mut self, _slot: i64, _value: i64) {}
+    /// Draw a picture: `data` holds one character per pixel, `w` pixels per row, each pixel a
+    /// `scale` x `scale` block. `0-9a-f` are colours 0-15; anything else (`.`) is see-through.
+    fn palette(&mut self, _colour: i64, _r: i64, _g: i64, _b: i64) {}
+    fn shake(&mut self, _n: i64) {}
+    /// Draw a scrolling map: `map` holds tile numbers (`map_w` per row); `sheet` holds the tiles
+    /// one after another, each `tile` x `tile` characters like a sprite. (sx, sy) is the world
+    /// pixel shown at the top-left of the screen.
+    fn tiles(&mut self, _map: &[u8], _map_w: i64, _sheet: &[u8], _tile: i64, _sx: i64, _sy: i64) {}
+    fn sprite(&mut self, x: i64, y: i64, data: &[u8], w: i64, scale: i64) {
+        let (w, s) = (w.clamp(1, 4096), scale.clamp(1, 64));
+        for (i, &ch) in data.iter().enumerate() {
+            let c = match ch {
+                b'0'..=b'9' => ch - b'0',
+                b'a'..=b'f' => ch - b'a' + 10,
+                b'A'..=b'F' => ch - b'A' + 10,
+                _ => continue,
+            };
+            let (cx, cy) = (i as i64 % w, i as i64 / w);
+            self.rect(x.saturating_add(cx * s), y.saturating_add(cy * s), s, s, c as i64);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------
-// Program file format (.rbc):  "RBC1" | u16 nfuncs | funcs | u16 nstrings | strings | u32 codelen | code
+// Program file format (.rbc):  "RBC2" | u16 nfuncs | funcs | u16 nstrings | strings | u32 codelen | code
 pub struct Func {
     pub entry: u32,
     pub nparams: u16,
@@ -122,7 +153,7 @@ pub struct Program {
 impl Program {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut o = Vec::new();
-        o.extend_from_slice(b"RBC1");
+        o.extend_from_slice(b"RBC2");
         o.extend_from_slice(&self.main.to_le_bytes());
         o.extend_from_slice(&(self.funcs.len() as u16).to_le_bytes());
         for f in &self.funcs {
@@ -170,9 +201,9 @@ impl Program {
                 let n = match code[pc] {
                     op::PUSH => 8,
                     op::PUSH8 | op::INTR => 1,
-                    op::LOAD | op::STORE | op::CALL | op::PRINTS | op::LIT | op::PUSH16 | op::TEXTLIT => 2,
+                    op::LOAD | op::STORE | op::CALL | op::PRINTS | op::LIT | op::PUSH16 | op::TEXTLIT | op::SPRITELIT => 2,
                     op::JMP | op::JZ | op::JNZ => 4,
-                    0..=39 => 0,
+                    0..=40 => 0,
                     _ => return Err("unknown instruction"),
                 };
                 pc += 1 + n;
@@ -206,7 +237,7 @@ impl Program {
                         }
                         pc += 3;
                     }
-                    op::PRINTS | op::LIT | op::TEXTLIT => {
+                    op::PRINTS | op::LIT | op::TEXTLIT | op::SPRITELIT => {
                         if u16at(at) >= self.strings.len() {
                             return Err("missing string");
                         }
@@ -247,7 +278,7 @@ impl Program {
             }
         }
         let mut r = R(b, 0);
-        if r.take(4)? != b"RBC1" {
+        if r.take(4)? != b"RBC2" {
             return Err("not a Ring program");
         }
         let main = r.u16()?;
@@ -686,6 +717,16 @@ impl<'p> Vm<'p> {
                     host.text(x, y, t, c);
                     self.stack.push(0);
                 }
+                op::SPRITELIT => {
+                    let i = self.u16()? as usize;
+                    let scale = self.pop()?;
+                    let w = self.pop()?;
+                    let y = self.pop()?;
+                    let x = self.pop()?;
+                    let t = self.prog.strings.get(i).ok_or(VmError::BadProgram)?;
+                    host.sprite(x, y, t, w, scale);
+                    self.stack.push(0);
+                }
                 op::HALT => return Ok(Exit::Done),
                 _ => return Err(VmError::BadProgram),
             }
@@ -707,7 +748,7 @@ impl<'p> Vm<'p> {
     /// Returns Some(result) or None when the player quit during `frame()`.
     fn intrinsic(&mut self, id: usize, host: &mut dyn Host) -> Result<Option<i64>, VmError> {
         let arity = INTRINSICS.get(id).ok_or(VmError::BadProgram)?.1;
-        let mut a = [0i64; 5];
+        let mut a = [0i64; 8];
         for i in (0..arity).rev() {
             a[i] = self.pop()?;
         }
@@ -762,6 +803,46 @@ impl<'p> Vm<'p> {
             12 => host.load(a[0]),
             13 => {
                 host.save(a[0], a[1]);
+                0
+            }
+            14 => {
+                match self.arr(a[2])? {
+                    Cells::B(v) => host.sprite(a[0], a[1], v, a[3], a[4]),
+                    Cells::W(v) => {
+                        let bytes: Vec<u8> = v.iter().map(|&c| c as u8).collect();
+                        host.sprite(a[0], a[1], &bytes, a[3], a[4]);
+                    }
+                }
+                0
+            }
+            15 => a[0].saturating_abs(),
+            16 => a[0].min(a[1]),
+            17 => a[0].max(a[1]),
+            18 => {
+                host.palette(a[0], a[1], a[2], a[3]);
+                0
+            }
+            19 => {
+                let to_bytes = |c: &Cells| -> Vec<u8> {
+                    match c {
+                        Cells::B(v) => v.clone(),
+                        Cells::W(v) => v.iter().map(|&x| x as u8).collect(),
+                    }
+                };
+                // borrow the byte arrays directly; only a `new` (8-byte cell) array needs a copy
+                let (m, s) = (self.arr(a[0])?, self.arr(a[2])?);
+                match (m, s) {
+                    (Cells::B(m), Cells::B(s)) => host.tiles(m, a[1], s, a[3], a[4], a[5]),
+                    (m, s) => host.tiles(&to_bytes(m), a[1], &to_bytes(s), a[3], a[4], a[5]),
+                }
+                0
+            }
+            20 => {
+                let ov = |p: i64, l: i64, q: i64, m: i64| p < q.saturating_add(m) && q < p.saturating_add(l);
+                (ov(a[0], a[2], a[4], a[6]) && ov(a[1], a[3], a[5], a[7])) as i64
+            }
+            21 => {
+                host.shake(a[0]);
                 0
             }
             _ => return Err(VmError::BadProgram),

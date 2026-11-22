@@ -10,7 +10,7 @@ Every game gets a hard **16 KB** budget (file and memory), so a whole arcade fit
 |---|---|---|
 | ![Breakout](docs/breakout.png) | ![Pong](docs/pong.png) | ![Snake](docs/snake.png) |
 
-The whole OS is a 68 KiB kernel; the gallery uses about 72 KB of RAM with six games loaded.
+The whole OS is a 60 KiB kernel. Games live in one `games.pak` file and are read from disk only when you pick one, so the gallery uses about 66 KB of RAM whether it holds six games or a million (tested with 1,000,006; see `research/game-archive.md`).
 Design notes and measurements are in [`research/`](research/).
 
     cargo run        # builds target/ringos.img (disk, for USB) and target/ringos.iso (CD, for VMs)
@@ -21,7 +21,7 @@ See `SYNTAX.md` for the language and `games/` for examples.
 ## Boot it
 - VirtualBox: `./run.ps1`, or attach `target/ringos.iso` to an EFI-enabled VM.
 - Real PC (UEFI, Secure Boot off): write `target/ringos.img` to a USB stick (Rufus "DD image" mode, or `dd`), boot from it.
-- Sound uses the PC speaker; high scores live in UEFI NVRAM (`save`/`load` in Ring).
+- Sound goes through an Intel HD Audio controller (the common laptop/PC/VM audio chip), falling back to the PC speaker; high scores live in UEFI NVRAM (`save`/`load` in Ring).
 
 ## Licence
 Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for personal, educational and

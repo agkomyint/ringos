@@ -29,7 +29,13 @@ else
 
 heart x < 10            heart = loop while the condition is not 0
   x = x + 1
-heart 1 == 1            a game loop that never ends (Esc quits)
+heart 1 == 1            a game loop that never ends (Esc pauses, hold Esc quits)
+
+for i 0 10              i = 0, 1 ... 9 (the end is re-read every time round)
+  mouth i
+
+const SPEED 4           a name for a fixed number (no memory, no slot)
+# a comment: from # to the end of the line
 ```
 
 ## Functions
@@ -67,9 +73,15 @@ scope                   arrays made inside the indented block are freed when it 
 | `time()` | milliseconds since the game started |
 | `rnd(n)` | random number from 0 to n-1 |
 | `width()`, `height()` | 320, 200 |
-| `beep(hz, ms)` | a square-wave tone on the PC speaker (`beep(0, 0)` = silence) |
+| `beep(hz, ms)` | a square-wave tone (HD Audio, else the PC speaker) (`beep(0, 0)` = silence) |
 | `save(slot, n)` | keep a number (slot 0-7, per game) across reboots: high scores |
 | `load(slot)` | read it back (0 if never saved) |
+| `sprite(x, y, "pic", w, scale)` | a picture: one character per pixel, `w` pixels per row, each pixel `scale` x `scale` big. `0-9a-f` = colours 0-15, `.` = see-through. Drawn from the program text, costs no memory |
+| `abs(n)`, `min(a, b)`, `max(a, b)` | the usual |
+| `overlap(x1,y1,w1,h1, x2,y2,w2,h2)` | 1 if the two rectangles touch, else 0 |
+| `tiles(map, map_w, sheet, tile, scroll_x, scroll_y)` | draw a scrolling tile map. `map` is a `bytes` array of tile numbers (`map_w` per row); `sheet` is a `bytes` array holding the tiles one after another, each `tile` x `tile` characters like a sprite |
+| `palette(c, r, g, b)` | redefine colour `c` (0-255) with r, g, b each 0-255 (fades, flashes). Reset when the game ends |
+| `shake(n)` | jolt the next shown frame by up to `n` pixels (max 16) |
 
 Colours 0-255 (a 256-colour palette, one byte per pixel). 0-15: black, blue, green, cyan, red, magenta, brown, light gray, dark gray, light blue,
 light green, light cyan, light red, light magenta, yellow, white. 16-231 are a 6x6x6 colour cube (16 + 36*r + 6*g + b, each 0-5), 232-255 greys.

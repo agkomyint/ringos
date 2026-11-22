@@ -8,3 +8,4 @@ fatfs = "0.3"
 fscommon = "0.1"
 gpt = "4"
 ringcc = { path = "../compiler" }
+ringvm = { path = "../vm" }

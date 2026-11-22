@@ -28,8 +28,7 @@ Heap use was 72K before and after playing a game and returning to the menu: no l
 
 ## Ideas not done
 - Smaller canvas or fewer colours (changes how games look).
-- Keep only bytecode for unlaunched games (already ~1 KB each; not worth it yet).
-- Disk access after ExitBootServices (needs a storage driver; all games are read at boot today).
+- (done) Games are no longer kept in memory: see game-archive.md. RAM is 66K with 6 games and with 1,000,006.
 
 ## Hardening pass (review, 2026-11)
 A review found that the 16 KB budget did not count per-array overhead, so a game could still exhaust the kernel heap.
@@ -37,5 +36,5 @@ A review found that the 16 KB budget did not count per-array overhead, so a game
   one-byte arrays now stops with the 16 KB error screen in the VM, the OS carries on.
 - `Program::verify` runs at load: function limits (<= 1024 variables), valid opcodes, complete operands, jumps land
   on instructions inside their own function, slots/strings/functions/built-ins exist. Corrupt files are refused.
-- The loader checks a file's size before reading it, and all preloaded games share a 192 KB budget.
+- The loader checks a file's size before reading it, and (since the archive) nothing is preloaded: one game at a time is read.
 - `save()` skips unchanged values and writes flash at most 16 times per play; one final write happens when the game ends.

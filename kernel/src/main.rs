@@ -4,14 +4,13 @@
 extern crate alloc;
 
 mod arcade;
+mod disk;
 mod gfx;
 mod heap;
-mod interrupts;
+mod input;
+mod sound;
 mod store;
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::time::Duration;
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
@@ -20,11 +19,9 @@ use uefi::proto::console::gop::GraphicsOutput;
 #[global_allocator]
 static HEAP: heap::Heap = heap::Heap::empty();
 
-/// Canvas 64 KB + one game's 16 KB + the loaded programs (about 1 KB each). 512 KiB leaves room
-/// for hundreds of games.
+/// Canvas 64 KB + the one running game (16 KB) + a page of the menu. Games are NOT kept in memory:
+/// they are read from \games.pak when picked, so RAM use does not grow with the game count.
 const HEAP_BYTES: usize = 512 * 1024;
-/// All preloaded games together may take at most this much of the heap.
-const MAX_GAMES_BYTES: usize = 192 * 1024;
 
 #[entry]
 fn main() -> Status {
@@ -45,6 +42,7 @@ fn main() -> Status {
             }
         }
     }
+    uefi::println!("RingOS v{}", env!("CARGO_PKG_VERSION"));
     uefi::println!("RingOS memory map: {} regions", map.entries().len());
     uefi::println!("  total: {} MiB, free: {} MiB", total_pages * 4 / 1024, free_pages * 4 / 1024);
     let (start, pages) = best.expect("no free memory");
@@ -55,63 +53,25 @@ fn main() -> Status {
     let take = (HEAP_BYTES as u64 / 4096).min(pages);
     let heap_ptr = boot::allocate_pages(AllocateType::Address(start), MemoryType::LOADER_DATA, take as usize).unwrap();
     unsafe { HEAP.lock().init(heap_ptr.as_ptr(), (take * 4096) as usize) };
-    uefi::println!("  heap: {} MiB claimed. Taking over...", take * 4 / 1024);
-    boot::stall(Duration::from_secs(1));
+    uefi::println!("  heap: {} KiB claimed", take * 4);
 
-    // ---- 2b. Load the preinstalled games from disk (firmware still alive).
-    let games = load_games();
-    uefi::println!("  games: {} loaded", games.len());
+    // ---- 3. Open the game archive. The firmware's disk drivers stay alive for the whole run, so
+    // the arcade can read games from disk whenever one is picked.
+    let pak = disk::open_pak();
+    match &pak {
+        Some(p) => uefi::println!("  games.pak: {} games", p.len()),
+        None => uefi::println!("  games.pak: not found"),
+    }
 
-    // ---- 3. Grab the screen while firmware can still hand it to us.
+    // ---- 4. Grab the screen and start the clock. We do NOT exit boot services.
     let handle = boot::get_handle_for_protocol::<GraphicsOutput>().unwrap();
     let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(handle).unwrap();
     let mut s = gfx::Screen::new(&mut gop);
-    core::mem::forget(gop); // dropping it would call firmware AFTER it's gone
-
-    // ---- 4. Exit boot services: firmware services (print, allocate, stall...) are GONE.
-    // From here the machine is ours. The framebuffer memory stays valid.
-    let _final_map = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
-
-    // ---- 5. Interrupts: the CPU now reacts to the timer and keyboard.
-    unsafe {
-        interrupts::SCREEN = &mut s;
-        interrupts::init();
-    }
-    arcade::run(&mut s, games)
-}
-
-/// Read every `\games\*.rbc` from the boot disk. Must run before ExitBootServices (firmware does the disk I/O).
-fn load_games() -> Vec<arcade::Game> {
-    use alloc::string::ToString;
-    use uefi::fs::{FileSystem, PathBuf};
-    use uefi::{cstr16, CString16};
-    let mut games = Vec::new();
-    let Ok(sfs) = boot::get_image_file_system(boot::image_handle()) else { return games };
-    let mut fs = FileSystem::new(sfs);
-    let Ok(dir) = fs.read_dir(cstr16!("\\games")) else { return games };
-    // Refuse oversized files BEFORE reading them, and stop at a total byte budget, so a stray or
-    // hostile file on the disk cannot run the heap out at boot.
-    let names: Vec<String> = dir
-        .filter_map(|e| e.ok())
-        .filter(|e| e.is_regular_file() && e.file_size() <= ringvm::MAX_PROGRAM_BYTES as u64)
-        .map(|e| e.file_name().to_string())
-        .collect();
-    let mut budget = MAX_GAMES_BYTES;
-    for file in names {
-        let Some(stem) = file.strip_suffix(".rbc") else { continue };
-        let Ok(full) = CString16::try_from(alloc::format!("\\games\\{file}").as_str()) else { continue };
-        let path = PathBuf::from(full);
-        let Ok(bytes) = fs.read(&path) else { continue };
-        if bytes.len() > budget {
-            break;
-        }
-        budget -= bytes.len();
-        if let Ok(program) = ringvm::Program::from_bytes(&bytes) {
-            games.push(arcade::Game { name: stem.to_string(), program, size: bytes.len() });
-        }
-    }
-    games.sort_by(|a, b| a.name.cmp(&b.name));
-    games
+    core::mem::forget(gop); // keep the framebuffer claim for the life of the machine
+    input::init_clock();
+    sound::init();
+    input::flush();
+    arcade::run(&mut s, pak)
 }
 
 /// No libc here, so provide the one C function the firmware bindings expect.

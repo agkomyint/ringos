@@ -71,7 +71,7 @@ fn power(op: char) -> u8 {
     }
 }
 
-const KEYWORDS: [&str; 10] = ["mouth", "if", "else", "heart", "back", "new", "bytes", "size", "free", "scope"];
+const KEYWORDS: [&str; 12] = ["mouth", "if", "else", "heart", "back", "new", "bytes", "size", "free", "scope", "for", "const"];
 /// Words from older Ring versions (typed input, files, windows, network): refused with a clear message.
 const RETIRED: [&str; 21] = ["ear", "hear", "eye", "hand", "voice", "same", "join", "listen", "wait", "recv", "send", "close", "sendfile", "filesize", "window", "button", "label", "event", "settext", "edit", "gettext"];
 
@@ -84,6 +84,7 @@ struct Parser {
     done: Vec<Func>,               // finished functions
     in_func: bool,
     scopes: usize, // how many `scope` blocks we are inside (in the current function)
+    consts: Vec<(String, i64)>, // `const NAME 5`: names that stand for a fixed number
 }
 
 impl Parser {
@@ -158,6 +159,9 @@ impl Parser {
                 }
                 if *self.peek() == Tok::Sym('(') {
                     return self.call(&name, pos);
+                }
+                if let Some((_, v)) = self.consts.iter().find(|(n, _)| *n == name) {
+                    return Ok(Expr::Num(*v));
                 }
                 let Some(slot) = self.lookup(&name) else {
                     return Err(format!("'{name}' is not defined at {pos}"));
@@ -350,6 +354,55 @@ impl Parser {
                 all.push(Stmt::Eval(Expr::ScopeClose));
                 Ok(Stmt::If(Expr::Num(1), all, Vec::new()))
             }
+            Tok::Ident(w) if w == "const" => {
+                // const NAME 42   (or a negative number): a name for a fixed number
+                self.next();
+                let Tok::Ident(name) = self.peek() else {
+                    return Err(format!("'const' needs a name at {pos}"));
+                };
+                let name = name.clone();
+                if KEYWORDS.contains(&name.as_str()) || self.lookup(&name).is_some() || self.consts.iter().any(|(n, _)| *n == name) {
+                    return Err(format!("'{name}' is already used at {pos}"));
+                }
+                self.next();
+                let neg = *self.peek() == Tok::Sym('-');
+                if neg {
+                    self.next();
+                }
+                let Tok::Num(n) = self.peek() else {
+                    return Err(format!("'const {name}' needs a plain number at {pos}"));
+                };
+                let n = if neg { -*n } else { *n };
+                self.next();
+                self.consts.push((name, n));
+                Ok(Stmt::If(Expr::Num(0), Vec::new(), Vec::new()))
+            }
+            Tok::Ident(w) if w == "for" => {
+                // for i 0 10   runs the block with i = 0, 1 ... 9 (the end is re-read each time round)
+                self.next();
+                let Tok::Ident(name) = self.peek() else {
+                    return Err(format!("'for' needs a variable name at {pos}"));
+                };
+                let name = name.clone();
+                if KEYWORDS.contains(&name.as_str()) || self.consts.iter().any(|(n, _)| *n == name) {
+                    return Err(format!("'{name}' cannot be a loop variable (at {pos})"));
+                }
+                self.next();
+                let from = self.expr(1)?;
+                let to = self.expr(1)?;
+                let slot = match self.lookup(&name) {
+                    Some(slot) => slot,
+                    None => {
+                        self.names.push(name.clone());
+                        self.visible.push((name, self.names.len() - 1));
+                        self.names.len() - 1
+                    }
+                };
+                let mut body = self.block()?;
+                body.push(Stmt::Assign(slot, Expr::Bin('+', Box::new(Expr::Var(slot)), Box::new(Expr::Num(1)))));
+                let cond = Expr::Bin('<', Box::new(Expr::Var(slot)), Box::new(to));
+                Ok(Stmt::If(Expr::Num(1), vec![Stmt::Assign(slot, from), Stmt::While(cond, body)], Vec::new()))
+            }
             Tok::Ident(w) if w == "heart" => {
                 self.next();
                 let cond = self.expr(1)?;
@@ -372,8 +425,8 @@ impl Parser {
             }
             Tok::Ident(name) if *self.peek2() == Tok::Sym('=') => {
                 let name = name.clone();
-                if KEYWORDS.contains(&name.as_str()) {
-                    return Err(format!("'{name}' is a keyword, it cannot be a variable (at {pos})"));
+                if KEYWORDS.contains(&name.as_str()) || self.consts.iter().any(|(n, _)| *n == name) {
+                    return Err(format!("'{name}' is a keyword or a const, it cannot be a variable (at {pos})"));
                 }
                 self.next();
                 self.next(); // skip the name and the '='
@@ -450,6 +503,7 @@ pub fn parse_with(toks: Vec<(Tok, usize)>, src: &str) -> Result<Program, String>
         done: Vec::new(),
         in_func: false,
         scopes: 0,
+        consts: Vec::new(),
     };
     if !src.is_empty() {
         let mut depth = 0i32;

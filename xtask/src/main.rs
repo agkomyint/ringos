@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::process::Command;
 
-const DISK_MB: u64 = 64;
+const MIN_DISK_MB: u64 = 64;
 
 fn main() {
     // 1. build the kernel as a UEFI application
@@ -30,9 +30,23 @@ fn main() {
         }
     }
 
-    // 2. create an empty disk file
+    // 1c. stress mode: RING_FAKE_GAMES=N adds N filler games (copies of the smallest real one)
+    if let Some(n) = std::env::var("RING_FAKE_GAMES").ok().and_then(|v| v.parse::<u32>().ok()) {
+        let tiny = games.iter().min_by_key(|g| g.1.len()).expect("a game to copy").1.clone();
+        for i in 0..n {
+            games.push((format!("zz{i:07}"), tiny.clone()));
+        }
+        println!("stress: added {n} fake games");
+    }
+    // 1d. pack everything into ONE file: \games.pak (sorted index + bytecode)
+    let refs: Vec<(&str, &[u8])> = games.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    let pak = ringvm::pak::build(&refs).expect("pak");
+    println!("games.pak: {} games, {} KiB", games.len(), pak.len() / 1024);
+
+    // 2. create an empty disk file (grows with the pak)
     let path = "target/ringos.img";
-    let size = DISK_MB * 1024 * 1024;
+    let disk_mb = MIN_DISK_MB.max((efi.len() as u64 + pak.len() as u64) / 1024 / 1024 * 12 / 10 + 8);
+    let size = disk_mb * 1024 * 1024;
     let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path).unwrap();
     file.set_len(size).unwrap();
 
@@ -48,7 +62,7 @@ fn main() {
             .create_from_device(&mut file, None)
             .unwrap();
         let id = disk
-            .add_partition("EFI", (DISK_MB - 4) * 1024 * 1024, gpt::partition_types::EFI, 0, None)
+            .add_partition("EFI", (disk_mb - 4) * 1024 * 1024, gpt::partition_types::EFI, 0, None)
             .unwrap();
         let p = disk.partitions().get(&id).unwrap();
         start = p.bytes_start(lb).unwrap();
@@ -63,41 +77,35 @@ fn main() {
     // (re-open after format)
     let slice = fscommon::StreamSlice::new(&mut file, start, start + len).unwrap();
     let fs = fatfs::FileSystem::new(fscommon::BufStream::new(slice), fatfs::FsOptions::new()).unwrap();
-    populate(&fs, &efi, &games);
+    populate(&fs, &efi, &pak);
     drop(fs);
     file.seek(SeekFrom::Start(0)).unwrap();
     println!("wrote {path} ({} KiB kernel)", efi.len() / 1024);
 
     // 5. the same boot files again as a CD/DVD image (for VMs, or burning)
-    let mut esp = std::io::Cursor::new(vec![0u8; 16 * 1024 * 1024]);
+    let esp_bytes = ((efi.len() + pak.len()) * 12 / 10 + 8 * 1024 * 1024).max(16 * 1024 * 1024);
+    let mut esp = std::io::Cursor::new(vec![0u8; esp_bytes]);
     fatfs::format_volume(&mut esp, fatfs::FormatVolumeOptions::new()).unwrap();
     {
         let fs = fatfs::FileSystem::new(&mut esp, fatfs::FsOptions::new()).unwrap();
-        populate(&fs, &efi, &games);
+        populate(&fs, &efi, &pak);
     }
     let iso = make_iso(&esp.into_inner());
     fs::write("target/ringos.iso", &iso).unwrap();
     println!("wrote target/ringos.iso ({} MiB)", iso.len() / 1024 / 1024);
 }
 
-/// Put the kernel at \EFI\BOOT\BOOTX64.EFI (where UEFI looks) and the games in \games.
-fn populate<IO: fatfs::ReadWriteSeek>(
-    fs: &fatfs::FileSystem<IO>,
-    efi: &[u8],
-    games: &[(String, Vec<u8>)],
-) {
+/// Put the kernel at \EFI\BOOT\BOOTX64.EFI (where UEFI looks) and the games in \games.pak.
+fn populate<IO: fatfs::ReadWriteSeek>(fs: &fatfs::FileSystem<IO>, efi: &[u8], pak: &[u8]) {
     let root = fs.root_dir();
     root.create_dir("EFI").unwrap().create_dir("BOOT").unwrap();
     let mut f = root.open_dir("EFI").unwrap().open_dir("BOOT").unwrap().create_file("BOOTX64.EFI").unwrap();
     f.write_all(efi).unwrap();
     f.flush().unwrap();
     drop(f);
-    let gd = root.create_dir("games").unwrap();
-    for (name, bytes) in games {
-        let mut f = gd.create_file(&format!("{name}.rbc")).unwrap();
-        f.write_all(bytes).unwrap();
-        f.flush().unwrap();
-    }
+    let mut f = root.create_file("games.pak").unwrap();
+    f.write_all(pak).unwrap();
+    f.flush().unwrap();
 }
 
 fn both32(v: u32) -> [u8; 8] {

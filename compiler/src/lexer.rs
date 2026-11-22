@@ -38,6 +38,14 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, String> {
             i += 1;
             continue;
         }
+        if c == b'#' {
+            // a comment runs to the end of the line; a line with only a comment does not
+            // count for indentation (the newline is handled on the next turn)
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
         if at_start {
             // first token on a line: compare its indentation with the open levels
             at_start = false;

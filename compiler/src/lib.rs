@@ -215,6 +215,16 @@ impl Gen {
                 self.expr(&args[3])?;
                 self.u16(op::TEXTLIT, i);
             }
+            Expr::Intr(14, args) if matches!(args.get(2), Some(Expr::Lit(_))) => {
+                // sprite(x, y, "picture", w, scale): drawn straight from the string table, no array
+                let Expr::Lit(t) = &args[2] else { unreachable!() };
+                let i = self.string(t)?;
+                self.expr(&args[0])?;
+                self.expr(&args[1])?;
+                self.expr(&args[3])?;
+                self.expr(&args[4])?;
+                self.u16(op::SPRITELIT, i);
+            }
             Expr::Intr(id, args) => {
                 for a in args {
                     self.expr(a)?;
@@ -320,6 +330,62 @@ mod tests {
         let mut vm = Vm::new(&prog, 1);
         vm.run(&mut host).expect("run");
         host
+    }
+
+    #[test]
+    fn comments_for_loops_and_consts() {
+        let h = run("# a comment line
+const STEP 3
+const NEG -2
+t = 0
+for i 0 4   # trailing comment
+  # comment inside a block
+  t = t + STEP
+mouth t
+mouth i
+mouth NEG
+mouth \"a # not a comment\"");
+        assert_eq!(h.out, ["12", "4", "-2", "a # not a comment"]);
+    }
+
+    #[test]
+    fn nested_for_and_zero_runs() {
+        let h = run("n = 0
+for i 0 3
+  for j 0 4
+    n = n + 1
+for k 5 5
+  n = n + 100
+mouth n");
+        assert_eq!(h.out, ["12"]);
+    }
+
+    #[test]
+    fn const_cannot_be_assigned() {
+        assert!(compile("const A 1
+A = 2").is_err());
+        assert!(compile("const A x").is_err());
+    }
+
+    #[test]
+    fn overlap_min_max_abs() {
+        let h = run("mouth overlap(0,0,10,10, 5,5,10,10)
+mouth overlap(0,0,10,10, 10,0,5,5)
+mouth min(3,-4)
+mouth max(3,-4)
+mouth abs(-9)");
+        assert_eq!(h.out, ["1", "0", "-4", "3", "9"]);
+    }
+
+    #[test]
+    fn tiles_and_palette_run() {
+        run("m = bytes 4
+m{1} = 1
+t = bytes 8
+t{4} = 49
+tiles(m, 2, t, 2, 1, 0)
+palette(3, 10, 20, 30)
+shake(4)");
     }
 
     #[test]

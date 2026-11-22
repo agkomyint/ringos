@@ -7,17 +7,14 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering::Relaxed;
+use core::time::Duration;
+use ringvm::pak::{Entry, Pak};
 use ringvm::{Host, Program, Vm};
 
 use crate::gfx::{Screen, VH as SVH, VW as SVW};
-use crate::interrupts::{key_down, speaker_off, speaker_tone, take_pressed, PRESSED, TICKS};
+use crate::disk::DiskReader;
+use crate::input::{key_down, now_ms, poll, speaker_off, speaker_tone, take_pressed, PRESSED};
 use crate::store;
-
-pub struct Game {
-    pub name: String,
-    pub program: Program,
-    pub size: usize, // compiled size in bytes
-}
 
 const VW: i64 = SVW as i64;
 const VH: i64 = SVH as i64;
@@ -37,6 +34,7 @@ struct Arcade<'a> {
     next: u64,
     start: u64,
     in_game: bool,
+    esc_at: u64,
     tone_off: u64, // tick when the current beep ends (0 = none)
     game: String,  // name of the running game (keys its saved numbers)
     slots: [i64; 8],
@@ -46,7 +44,7 @@ struct Arcade<'a> {
 
 impl<'a> Arcade<'a> {
     fn new(s: &'a mut Screen) -> Arcade<'a> {
-        Arcade { s, next: 0, start: TICKS.load(Relaxed), in_game: false, tone_off: 0, game: String::new(), slots: [0; 8], writes_left: 0, dirty: false }
+        Arcade { s, next: 0, start: now_ms(), esc_at: 0, in_game: false, tone_off: 0, game: String::new(), slots: [0; 8], writes_left: 0, dirty: false }
     }
 
     /// Draw text with the font enlarged by `mult` (menu titles).
@@ -55,6 +53,39 @@ impl<'a> Arcade<'a> {
             return;
         }
         self.s.text(x as usize, y as usize, s, color(c), mult);
+    }
+}
+
+impl<'a> Arcade<'a> {
+    /// Esc during a game: freeze it behind a small box. ENTER resumes, Esc leaves the game.
+    /// Returns false when the player leaves (the VM then stops).
+    fn pause(&mut self) -> bool {
+        speaker_off();
+        self.tone_off = 0;
+        let t0 = now_ms();
+        self.rect(60, 70, 200, 60, 1);
+        self.rect(60, 70, 200, 1, 15);
+        self.rect(60, 129, 200, 1, 15);
+        self.text_big(124, 80, "PAUSED", 14, 2);
+        self.text_big(76, 104, "ENTER resume", 15, 1);
+        self.text_big(76, 114, "ESC   quit to menu", 7, 1);
+        self.s.present();
+        let resume = loop {
+            poll();
+            if take_pressed(0x1C) || take_pressed(0x39) {
+                break true;
+            }
+            if take_pressed(ESC) {
+                break false;
+            }
+            uefi::boot::stall(Duration::from_millis(2));
+        };
+        self.start += now_ms() - t0; // time() does not count the pause
+        self.next = now_ms();
+        for k in PRESSED.iter() {
+            k.store(false, Relaxed);
+        }
+        resume
     }
 }
 
@@ -109,19 +140,24 @@ impl<'a> Host for Arcade<'a> {
                 PRESSED[sc as usize].store(false, Relaxed);
             }
         }
-        // sleep until the 60 Hz frame boundary; the CPU idles in `hlt` instead of spinning
-        while TICKS.load(Relaxed) < self.next {
-            x86_64::instructions::hlt();
+        // wait for the 60 Hz frame boundary, reading the keyboard as we go (a tap is never missed)
+        poll();
+        while now_ms() < self.next {
+            uefi::boot::stall(Duration::from_micros(300));
+            poll();
         }
-        self.next = TICKS.load(Relaxed) + 16;
-        if self.tone_off != 0 && TICKS.load(Relaxed) >= self.tone_off {
+        self.next = now_ms() + 16;
+        if self.tone_off != 0 && now_ms() >= self.tone_off {
             speaker_off();
             self.tone_off = 0;
         }
-        !key_down(ESC)
+        if self.in_game && take_pressed(ESC) {
+            return self.pause();
+        }
+        true
     }
     fn time(&mut self) -> i64 {
-        TICKS.load(Relaxed).saturating_sub(self.start) as i64
+        now_ms().saturating_sub(self.start) as i64
     }
     fn width(&mut self) -> i64 {
         VW
@@ -130,7 +166,15 @@ impl<'a> Host for Arcade<'a> {
         VH
     }
     fn should_quit(&mut self) -> bool {
-        key_down(ESC)
+        // a runaway game that never calls frame(): Esc held for a second stops it
+        if !key_down(ESC) {
+            self.esc_at = 0;
+            return false;
+        }
+        if self.esc_at == 0 {
+            self.esc_at = now_ms();
+        }
+        now_ms().saturating_sub(self.esc_at) > 1000
     }
     fn print(&mut self, _s: &str) {}
     fn beep(&mut self, freq: i64, ms: i64) {
@@ -139,8 +183,23 @@ impl<'a> Host for Arcade<'a> {
             self.tone_off = 0;
         } else {
             speaker_tone(freq.min(20_000) as u32);
-            self.tone_off = TICKS.load(Relaxed) + ms.min(5000) as u64;
+            self.tone_off = now_ms() + ms.min(5000) as u64;
         }
+    }
+    fn sprite(&mut self, x: i64, y: i64, data: &[u8], w: i64, scale: i64) {
+        self.s.sprite(x, y, data, w, scale);
+    }
+    fn tiles(&mut self, map: &[u8], map_w: i64, sheet: &[u8], tile: i64, sx: i64, sy: i64) {
+        self.s.tiles(map, map_w, sheet, tile, sx, sy);
+    }
+    fn palette(&mut self, colour: i64, r: i64, g: i64, b: i64) {
+        self.s.set_color(colour as usize, r, g, b);
+    }
+    fn shake(&mut self, n: i64) {
+        let n = n.clamp(0, 16);
+        let r = now_ms().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let span = 2 * n as u64 + 1;
+        self.s.shake(((r >> 20) % span) as i64 - n, ((r >> 40) % span) as i64 - n);
     }
     fn load(&mut self, slot: i64) -> i64 {
         self.slots[(slot & 7) as usize]
@@ -165,81 +224,156 @@ fn edge(_prev: &mut [bool; 128], sc: u8) -> bool {
     take_pressed(sc)
 }
 
+/// PS/2 scancode -> character, for typing a game name to search for.
+const LETTERS: [(u8, char); 36] = [
+    (0x1E, 'a'), (0x30, 'b'), (0x2E, 'c'), (0x20, 'd'), (0x12, 'e'), (0x21, 'f'), (0x22, 'g'), (0x23, 'h'), (0x17, 'i'),
+    (0x24, 'j'), (0x25, 'k'), (0x26, 'l'), (0x32, 'm'), (0x31, 'n'), (0x18, 'o'), (0x19, 'p'), (0x10, 'q'), (0x13, 'r'),
+    (0x1F, 's'), (0x14, 't'), (0x16, 'u'), (0x2F, 'v'), (0x11, 'w'), (0x2D, 'x'), (0x15, 'y'), (0x2C, 'z'), (0x02, '1'),
+    (0x03, '2'), (0x04, '3'), (0x05, '4'), (0x06, '5'), (0x07, '6'), (0x08, '7'), (0x09, '8'), (0x0A, '9'), (0x0B, '0'),
+];
+const ROWS: u32 = 8;
+
+/// Read the page of menu rows starting at `top` (at most ROWS entries, cached by the disk reader).
+fn load_page(pak: &mut Pak<DiskReader>, top: u32) -> Vec<Entry> {
+    (top..top.saturating_add(ROWS)).map_while(|i| pak.entry(i)).collect()
+}
+
 /// The gallery. Never returns: an arcade machine has no "off" except the power button.
-pub fn run(s: &mut Screen, games: Vec<Game>) -> ! {
+///
+/// The menu holds only `ROWS` entries in memory; the rest of the (possibly huge) game list stays
+/// in the pak on disk. Keys: UP/DOWN move 1, PGUP/PGDN 8, LEFT/RIGHT 100, TAB random game,
+/// letters/digits search by name, BACKSPACE edits the search, ENTER plays.
+pub fn run(s: &mut Screen, mut pak: Option<Pak<DiskReader>>) -> ! {
     let mut a = Arcade::new(s);
     let mut prev = [false; 128];
-    let mut sel = 0usize;
-    const ROWS: usize = 8;
+    let total = pak.as_ref().map_or(0, |p| p.len());
+    let last = total.saturating_sub(1) as i64;
+    let mut sel = 0u32;
+    let mut query = String::new();
+    let mut page: Vec<Entry> = Vec::new();
+    let mut top = 0u32;
+    let mut page_top = u32::MAX;
     loop {
-        let up = edge(&mut prev, 0x48);
-        let down = edge(&mut prev, 0x50);
-        let go = edge(&mut prev, 0x1C) | edge(&mut prev, 0x1E) | edge(&mut prev, 0x2C) | edge(&mut prev, 0x39);
-        if up && sel > 0 {
-            sel -= 1;
+        poll();
+        let mut d = 0i64;
+        if edge(&mut prev, 0x48) { d -= 1; }
+        if edge(&mut prev, 0x50) { d += 1; }
+        if edge(&mut prev, 0x49) { d -= ROWS as i64; }
+        if edge(&mut prev, 0x51) { d += ROWS as i64; }
+        if edge(&mut prev, 0x4B) { d -= 100; }
+        if edge(&mut prev, 0x4D) { d += 100; }
+        sel = (sel as i64 + d).clamp(0, last) as u32;
+        let go = edge(&mut prev, 0x1C) | edge(&mut prev, 0x39);
+        if edge(&mut prev, 0x0F) && total > 0 {
+            sel = ((now_ms().wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 20) % total as u64) as u32;
         }
-        if down && sel + 1 < games.len() {
-            sel += 1;
+        let mut typed = false;
+        if edge(&mut prev, 0x0E) && query.pop().is_some() {
+            typed = true;
+        }
+        if edge(&mut prev, 0x01) && !query.is_empty() {
+            query.clear();
+            typed = true;
+        }
+        for &(sc, ch) in LETTERS.iter() {
+            if take_pressed(sc) && query.len() < ringvm::pak::NAME_MAX {
+                query.push(ch);
+                typed = true;
+            }
+        }
+        if typed {
+            if let Some(p) = pak.as_mut() {
+                sel = p.lower_bound(&query).min(total.saturating_sub(1));
+            }
+        }
+        // keep the selection inside the visible window of ROWS entries
+        if sel < top {
+            top = sel;
+        } else if sel >= top + ROWS {
+            top = sel + 1 - ROWS;
+        }
+        if let Some(p) = pak.as_mut() {
+            if page_top != top {
+                page = load_page(p, top);
+                page_top = top;
+            }
         }
 
-        if go && !games.is_empty() {
-            let seed = TICKS.load(Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-            let mut vm = Vm::new(&games[sel].program, seed);
-            a.next = 0;
-            for k in PRESSED.iter() {
-                k.store(false, Relaxed); // taps made in the menu must not leak into the game
-            }
-            a.game = games[sel].name.clone();
-            a.slots = store::load(&a.game);
-            a.writes_left = 16;
-            a.dirty = false;
-            a.start = TICKS.load(Relaxed);
-            a.in_game = true;
-            let result = vm.run(&mut a);
-            a.in_game = false;
-            if a.dirty {
-                store::save(&a.game, &a.slots);
-                a.dirty = false;
-            }
-            speaker_off();
-            a.tone_off = 0;
-            match result {
-                Ok(_) => {}
-                Err(e) => crash_screen(&mut a, &games[sel].name, e.message()),
-            }
-            // wait until Esc / Enter are released so the menu doesn't react to the same press
-            while key_down(ESC) || key_down(0x1C) {
-                a.frame();
+        if go && total > 0 {
+            let chosen = page.get((sel - page_top) as usize).cloned();
+            if let (Some(p), Some(e)) = (pak.as_mut(), chosen) {
+                // read just this game from disk, verify it, run it, then drop it again
+                let loaded = p.read_game(&e).ok_or("could not read game").and_then(|b| Program::from_bytes(&b).map_err(|_| "bad program"));
+                let outcome = match loaded {
+                    Ok(program) => {
+                        let seed = now_ms().wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                        let mut vm = Vm::new(&program, seed);
+                        a.next = 0;
+                        for k in PRESSED.iter() {
+                            k.store(false, Relaxed); // taps made in the menu must not leak into the game
+                        }
+                        a.game = String::from(e.name());
+                        a.slots = store::load(&a.game);
+                        a.writes_left = 16;
+                        a.dirty = false;
+                        a.start = now_ms();
+                        a.in_game = true;
+                        let result = vm.run(&mut a);
+                        a.in_game = false;
+                        if a.dirty {
+                            store::save(&a.game, &a.slots);
+                            a.dirty = false;
+                        }
+                        speaker_off();
+                        a.s.reset_palette();
+                        a.tone_off = 0;
+                        result.map_err(|e| e.message())
+                    }
+                    Err(m) => Err(m),
+                };
+                if let Err(m) = outcome {
+                    crash_screen(&mut a, e.name(), m);
+                }
+                // wait until Esc / Enter are released so the menu doesn't react to the same press
+                while key_down(ESC) || key_down(0x1C) {
+                    a.frame();
+                }
+                for k in PRESSED.iter() {
+                    k.store(false, Relaxed);
+                }
             }
             continue;
         }
 
         a.clear(1);
         a.text_big(56, 10, "RingOS ARCADE", 14, 2);
+        a.text_big(268, 10, &if crate::sound::ready() { String::from("HDA") } else { format!("BEEP{}", crate::sound::STAGE.load(Relaxed)) }, 8, 1);
+        a.text_big(268, 20, concat!("v", env!("CARGO_PKG_VERSION")), 8, 1);
         a.rect(8, 34, 304, 1, 9);
-        if games.is_empty() {
-            a.text_big(16, 60, "No games found in \\games", 12, 1);
+        if pak.is_none() {
+            a.text_big(16, 60, "No games.pak on the disk", 12, 1);
+        } else if total == 0 {
+            a.text_big(16, 60, "games.pak is empty", 12, 1);
         }
-        let first = sel.saturating_sub(ROWS - 1);
-        for (row, g) in games.iter().enumerate().skip(first).take(ROWS) {
-            let y = 44 + (row - first) as i64 * 16;
-            if row == sel {
-                a.rect(8, y - 3, 304, 14, 9);
-                a.text_big(16, y, &format!("> {}", g.name), 15, 1);
+        for (row, g) in page.iter().enumerate() {
+            let y = 44 + row as i64 * 14;
+            let size = g.size as usize;
+            let here = page_top + row as u32 == sel;
+            if here {
+                a.rect(8, y - 3, 304, 13, 9);
+                a.text_big(16, y, &format!("> {}", g.name()), 15, 1);
             } else {
-                a.text_big(16, y, &format!("  {}", g.name), 7, 1);
+                a.text_big(16, y, &format!("  {}", g.name()), 7, 1);
             }
-            a.text_big(248, y, &format!("{}.{}K", g.size / 1024, g.size % 1024 * 10 / 1024), if row == sel { 15 } else { 8 }, 1);
+            a.text_big(248, y, &format!("{}.{}K", size / 1024, size % 1024 * 10 / 1024), if here { 15 } else { 8 }, 1);
         }
-        // read the numbers and release the lock BEFORE formatting: format! allocates, and the
+        // read the number and release the lock BEFORE formatting: format! allocates, and the
         // heap lock is not re-entrant
-        let (used, total) = {
-            let heap = crate::HEAP.lock();
-            (heap.used(), heap.size())
-        };
-        a.text_big(8, 166, &format!("RAM {}K of {}K used  {} games", used / 1024, total / 1024, games.len()), 8, 1);
-        a.rect(8, 178, 304, 1, 9);
-        a.text_big(8, 184, "UP/DOWN pick  ENTER play", 7, 1);
+        let used = crate::HEAP.lock().used();
+        a.text_big(8, 160, &format!("find: {}_", query), 14, 1);
+        a.text_big(8, 170, &format!("{} of {} games   RAM {}K", if total == 0 { 0 } else { sel + 1 }, total, used / 1024), 8, 1);
+        a.rect(8, 180, 304, 1, 9);
+        a.text_big(8, 187, "ENTER play  TAB random  type to find", 7, 1);
         a.frame();
     }
 }
