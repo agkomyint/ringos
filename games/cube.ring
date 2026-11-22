@@ -72,5 +72,5 @@ heart 1 == 1
     line(px[i + 4], py[i + 4], px[j + 4], py[j + 4], 9)
     line(px[i], py[i], px[i + 4], py[i + 4], 11)
   textx(8, 6, "CUBE", 14, 2)
-  text(8, 184, "ARROWS SPIN  A STOP  B RESET", 7)
+  text(8, 184, "ARROWS SPIN  A STOP  S RESET", 7)
   frame()
