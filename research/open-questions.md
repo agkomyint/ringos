@@ -8,3 +8,6 @@
 - 16 KB: should the limit also cover the stack/frames budget separately? Today it is one shared budget.
 - Colours: 256-colour palette is fixed. Custom palettes per game would cost bytes in the .rbc.
 - Controls: no gamepad support yet (USB HID).
+- Boot robustness: `unwrap`/`panic!` on unusual framebuffer formats and other firmware failures; panic behaviour after
+  ExitBootServices is untested. Interrupt stubs do not save SSE registers (fine while handlers stay trivial).
+- Signed games / signed kernel (needed to control which games run on shipped hardware).

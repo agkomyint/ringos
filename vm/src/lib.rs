@@ -140,6 +140,93 @@ impl Program {
         o
     }
 
+    /// Check the bytecode before it ever runs, so a corrupt or hostile file is refused at load time:
+    /// every function fits its limits, every instruction is real and complete, every jump lands on
+    /// an instruction inside its own function, and every slot, string, function and intrinsic exists.
+    pub fn verify(&self) -> Result<(), &'static str> {
+        let code = &self.code;
+        let mut order: Vec<usize> = (0..self.funcs.len()).collect();
+        order.sort_by_key(|&i| self.funcs[i].entry);
+        for w in order.windows(2) {
+            if self.funcs[w[0]].entry == self.funcs[w[1]].entry {
+                return Err("two functions share an entry");
+            }
+        }
+        for (k, &fi) in order.iter().enumerate() {
+            let f = &self.funcs[fi];
+            if f.nvars > MAX_VARS || f.nparams > f.nvars {
+                return Err("function has too many variables");
+            }
+            let start = f.entry as usize;
+            let end = order.get(k + 1).map_or(code.len(), |&n| self.funcs[n].entry as usize);
+            if start >= end || end > code.len() {
+                return Err("function outside the code");
+            }
+            // pass 1: instruction boundaries
+            let mut starts = alloc::vec![false; end - start + 1];
+            let mut pc = start;
+            while pc < end {
+                starts[pc - start] = true;
+                let n = match code[pc] {
+                    op::PUSH => 8,
+                    op::PUSH8 | op::INTR => 1,
+                    op::LOAD | op::STORE | op::CALL | op::PRINTS | op::LIT | op::PUSH16 | op::TEXTLIT => 2,
+                    op::JMP | op::JZ | op::JNZ => 4,
+                    0..=39 => 0,
+                    _ => return Err("unknown instruction"),
+                };
+                pc += 1 + n;
+            }
+            if pc != end {
+                return Err("instruction runs past its function");
+            }
+            // pass 2: operands
+            let mut pc = start;
+            while pc < end {
+                let at = pc + 1;
+                let u16at = |a: usize| u16::from_le_bytes([code[a], code[a + 1]]) as usize;
+                match code[pc] {
+                    op::PUSH => pc += 9,
+                    op::PUSH8 => pc += 2,
+                    op::INTR => {
+                        if code[at] as usize >= INTRINSICS.len() {
+                            return Err("unknown built-in");
+                        }
+                        pc += 2;
+                    }
+                    op::LOAD | op::STORE => {
+                        if u16at(at) >= f.nvars as usize {
+                            return Err("variable out of range");
+                        }
+                        pc += 3;
+                    }
+                    op::CALL => {
+                        if u16at(at) >= self.funcs.len() {
+                            return Err("call to a missing function");
+                        }
+                        pc += 3;
+                    }
+                    op::PRINTS | op::LIT | op::TEXTLIT => {
+                        if u16at(at) >= self.strings.len() {
+                            return Err("missing string");
+                        }
+                        pc += 3;
+                    }
+                    op::PUSH16 => pc += 3,
+                    op::JMP | op::JZ | op::JNZ => {
+                        let t = u32::from_le_bytes([code[at], code[at + 1], code[at + 2], code[at + 3]]) as usize;
+                        if t < start || t >= end || !starts[t - start] {
+                            return Err("jump to the middle of nowhere");
+                        }
+                        pc += 5;
+                    }
+                    _ => pc += 1,
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_bytes(b: &[u8]) -> Result<Program, &'static str> {
         if b.len() > MAX_PROGRAM_BYTES {
             return Err("game is over the 16 KB limit");
@@ -180,7 +267,9 @@ impl Program {
         if main as usize >= funcs.len() {
             return Err("bad main");
         }
-        Ok(Program { funcs, strings, code, main })
+        let prog = Program { funcs, strings, code, main };
+        prog.verify()?;
+        Ok(prog)
     }
 }
 
@@ -220,6 +309,13 @@ pub const MEM_LIMIT: usize = 16 * 1024;
 pub const MAX_PROGRAM_BYTES: usize = 16 * 1024;
 const MAX_ARRAY: i64 = MEM_LIMIT as i64; // sanity cap on one `new n`; the byte budget below does the real work
 const MAX_ARRAY_TOTAL: usize = MEM_LIMIT;
+/// Every live array also costs a handle-table entry plus allocator overhead on the real heap.
+/// Charging for it keeps 16 KB of working memory really about 16 KB, however many tiny arrays are made.
+const HANDLE_COST: usize = 48;
+/// At most this many arrays alive at once.
+pub const MAX_LIVE_ARRAYS: usize = 256;
+/// Most local variables one function may declare (a stack frame is 8 bytes per variable).
+pub const MAX_VARS: u16 = 1024;
 
 /// Array storage. Word arrays use 8 bytes per cell; byte arrays (text, `bytes n`) use 1.
 enum Cells {
@@ -269,6 +365,7 @@ pub struct Vm<'p> {
     arrays: Vec<Option<Cells>>,
     free_handles: Vec<usize>,
     live_cells: usize,
+    live_arrays: usize,
     /// allocation log for `scope`: handles made since each scope opened
     alloc_log: Vec<usize>,
     scope_marks: Vec<usize>,
@@ -285,6 +382,7 @@ impl<'p> Vm<'p> {
             arrays: Vec::new(),
             free_handles: Vec::new(),
             live_cells: 0,
+            live_arrays: 0,
             alloc_log: Vec::new(),
             scope_marks: Vec::new(),
             pc: 0,
@@ -308,10 +406,11 @@ impl<'p> Vm<'p> {
     }
 
     fn alloc(&mut self, cells: Cells) -> Result<i64, VmError> {
-        if self.used() + cells.bytes() > MAX_ARRAY_TOTAL {
+        if self.live_arrays >= MAX_LIVE_ARRAYS || self.used() + cells.bytes() + HANDLE_COST > MAX_ARRAY_TOTAL {
             return Err(VmError::OutOfMemory);
         }
-        self.live_cells += cells.bytes();
+        self.live_cells += cells.bytes() + HANDLE_COST;
+        self.live_arrays += 1;
         let slot = match self.free_handles.pop() {
             Some(s) => {
                 self.arrays[s] = Some(cells);
@@ -330,7 +429,8 @@ impl<'p> Vm<'p> {
 
     fn release(&mut self, slot: usize) -> bool {
         if let Some(a) = self.arrays.get_mut(slot).and_then(|a| a.take()) {
-            self.live_cells -= a.bytes();
+            self.live_cells -= a.bytes() + HANDLE_COST;
+            self.live_arrays -= 1;
             self.free_handles.push(slot);
             true
         } else {
@@ -500,6 +600,10 @@ impl<'p> Vm<'p> {
                         return Err(VmError::OutOfMemory);
                     }
                     // check the budget before allocating so a huge `new` fails cleanly
+                    let want = n as usize * if opcode == op::NEWB { 1 } else { 8 };
+                    if self.used() + want + HANDLE_COST > MAX_ARRAY_TOTAL {
+                        return Err(VmError::OutOfMemory);
+                    }
                     let cells = if opcode == op::NEWB { Cells::B(alloc::vec![0; n as usize]) } else { Cells::W(alloc::vec![0; n as usize]) };
                     let h = self.alloc(cells)?;
                     self.stack.push(h);

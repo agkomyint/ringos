@@ -577,3 +577,79 @@ mod game_smoke {
         }
     }
 }
+
+#[cfg(test)]
+mod hardening {
+    use ringvm::{op, Func, Host, Program, Vm, VmError};
+    struct Nop;
+    impl Host for Nop {
+        fn clear(&mut self, _: i64) {}
+        fn rect(&mut self, _: i64, _: i64, _: i64, _: i64, _: i64) {}
+        fn pixel(&mut self, _: i64, _: i64, _: i64) {}
+        fn text(&mut self, _: i64, _: i64, _: &[u8], _: i64) {}
+        fn num(&mut self, _: i64, _: i64, _: i64, _: i64) {}
+        fn key(&mut self, _: i64) -> bool {
+            false
+        }
+        fn frame(&mut self) -> bool {
+            true
+        }
+        fn time(&mut self) -> i64 {
+            0
+        }
+        fn width(&mut self) -> i64 {
+            320
+        }
+        fn height(&mut self) -> i64 {
+            200
+        }
+        fn should_quit(&mut self) -> bool {
+            false
+        }
+        fn print(&mut self, _: &str) {}
+    }
+    fn run(src: &str) -> Result<ringvm::Exit, VmError> {
+        Vm::new(&super::compile(src).unwrap(), 1).run(&mut Nop)
+    }
+    fn prog(nvars: u16, code: Vec<u8>) -> Program {
+        Program { funcs: vec![Func { entry: 0, nparams: 0, nvars }], strings: vec![], code, main: 0 }
+    }
+    fn load(p: &Program) -> Result<Program, &'static str> {
+        Program::from_bytes(&p.to_bytes())
+    }
+
+    #[test]
+    fn tiny_arrays_cannot_exhaust_the_heap() {
+        // a million empty arrays, never freed
+        assert_eq!(run("i = 0\nheart i < 1000000\n  a = new 0\n  i = i + 1\n").unwrap_err(), VmError::OutOfMemory);
+        // many one-byte arrays: the handle overhead is charged, so this stops long before 16000
+        assert_eq!(run("i = 0\nheart i < 16000\n  a = bytes 1\n  i = i + 1\n").unwrap_err(), VmError::OutOfMemory);
+        // but arrays that are freed or scoped can be reused forever
+        assert!(run("i = 0\nheart i < 5000\n  a = new 10\n  free(a)\n  i = i + 1\n").is_ok());
+    }
+
+    #[test]
+    fn real_games_pass_the_verifier() {
+        for e in std::fs::read_dir("../games").unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().map_or(false, |x| x == "ring") {
+                let c = super::compile(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                load(&c).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            }
+        }
+    }
+
+    #[test]
+    fn the_verifier_refuses_bad_programs() {
+        assert!(load(&prog(0, vec![op::HALT])).is_ok());
+        assert!(load(&prog(65535, vec![op::HALT])).is_err(), "huge frame");
+        assert!(load(&prog(0, vec![200])).is_err(), "unknown opcode");
+        assert!(load(&prog(0, vec![op::PUSH, 1, 2])).is_err(), "truncated operand");
+        assert!(load(&prog(0, vec![op::JMP, 1, 0, 0, 0, op::HALT])).is_err(), "jump into an operand");
+        assert!(load(&prog(0, vec![op::JMP, 99, 0, 0, 0, op::HALT])).is_err(), "jump out of the code");
+        assert!(load(&prog(1, vec![op::LOAD, 5, 0, op::HALT])).is_err(), "variable out of range");
+        assert!(load(&prog(0, vec![op::CALL, 3, 0, op::HALT])).is_err(), "missing function");
+        assert!(load(&prog(0, vec![op::LIT, 0, 0, op::HALT])).is_err(), "missing string");
+        assert!(load(&prog(0, vec![op::INTR, 99, op::HALT])).is_err(), "missing built-in");
+    }
+}

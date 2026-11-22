@@ -6,7 +6,7 @@ Every game gets a hard budget, so a whole arcade fits on a tiny machine:
 - the compiled game (`.rbc`) is at most **16 KB** (the compiler refuses bigger ones; most games are 0.5-1.5 KB);
 - working memory is at most **16 KB**: arrays (8 bytes per `new` cell, **1 byte per `bytes` cell or text**)
   + the value stack (8 bytes per value) + call frames (16 bytes each).
-Go over and the game stops with a "16 KB memory limit" screen. Use `bytes` for anything that fits in
+Each live array also costs 48 bytes of bookkeeping and at most 256 arrays may exist at once. Go over and the game stops with a "16 KB memory limit" screen. Use `bytes` for anything that fits in
 0-255 (coordinates on a grid, tiles, text): it is 8 times smaller.
 
 ## Basics

@@ -40,11 +40,13 @@ struct Arcade<'a> {
     tone_off: u64, // tick when the current beep ends (0 = none)
     game: String,  // name of the running game (keys its saved numbers)
     slots: [i64; 8],
+    writes_left: u32, // NVRAM writes this game may still make (flash wears out)
+    dirty: bool,      // a saved value is waiting to be written
 }
 
 impl<'a> Arcade<'a> {
     fn new(s: &'a mut Screen) -> Arcade<'a> {
-        Arcade { s, next: 0, start: TICKS.load(Relaxed), in_game: false, tone_off: 0, game: String::new(), slots: [0; 8] }
+        Arcade { s, next: 0, start: TICKS.load(Relaxed), in_game: false, tone_off: 0, game: String::new(), slots: [0; 8], writes_left: 0, dirty: false }
     }
 
     /// Draw text with the font enlarged by `mult` (menu titles).
@@ -119,7 +121,7 @@ impl<'a> Host for Arcade<'a> {
         !key_down(ESC)
     }
     fn time(&mut self) -> i64 {
-        (TICKS.load(Relaxed) - self.start) as i64
+        TICKS.load(Relaxed).saturating_sub(self.start) as i64
     }
     fn width(&mut self) -> i64 {
         VW
@@ -144,8 +146,18 @@ impl<'a> Host for Arcade<'a> {
         self.slots[(slot & 7) as usize]
     }
     fn save(&mut self, slot: i64, value: i64) {
-        self.slots[(slot & 7) as usize] = value;
-        store::save(&self.game, &self.slots);
+        let i = (slot & 7) as usize;
+        if self.slots[i] == value {
+            return; // nothing changed: do not touch the flash
+        }
+        self.slots[i] = value;
+        if self.writes_left > 0 {
+            self.writes_left -= 1;
+            self.dirty = false;
+            store::save(&self.game, &self.slots);
+        } else {
+            self.dirty = true; // over the cap: remember it, write once when the game ends
+        }
     }
 }
 
@@ -179,9 +191,16 @@ pub fn run(s: &mut Screen, games: Vec<Game>) -> ! {
             }
             a.game = games[sel].name.clone();
             a.slots = store::load(&a.game);
+            a.writes_left = 16;
+            a.dirty = false;
+            a.start = TICKS.load(Relaxed);
             a.in_game = true;
             let result = vm.run(&mut a);
             a.in_game = false;
+            if a.dirty {
+                store::save(&a.game, &a.slots);
+                a.dirty = false;
+            }
             speaker_off();
             a.tone_off = 0;
             match result {
@@ -220,7 +239,7 @@ pub fn run(s: &mut Screen, games: Vec<Game>) -> ! {
         };
         a.text_big(8, 166, &format!("RAM {}K of {}K used  {} games", used / 1024, total / 1024, games.len()), 8, 1);
         a.rect(8, 178, 304, 1, 9);
-        a.text_big(8, 184, "UP/DOWN pick  ENTER play  ESC=exit", 7, 1);
+        a.text_big(8, 184, "UP/DOWN pick  ENTER play", 7, 1);
         a.frame();
     }
 }

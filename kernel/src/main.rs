@@ -23,6 +23,8 @@ static HEAP: heap::Heap = heap::Heap::empty();
 /// Canvas 64 KB + one game's 16 KB + the loaded programs (about 1 KB each). 512 KiB leaves room
 /// for hundreds of games.
 const HEAP_BYTES: usize = 512 * 1024;
+/// All preloaded games together may take at most this much of the heap.
+const MAX_GAMES_BYTES: usize = 192 * 1024;
 
 #[entry]
 fn main() -> Status {
@@ -87,12 +89,23 @@ fn load_games() -> Vec<arcade::Game> {
     let Ok(sfs) = boot::get_image_file_system(boot::image_handle()) else { return games };
     let mut fs = FileSystem::new(sfs);
     let Ok(dir) = fs.read_dir(cstr16!("\\games")) else { return games };
-    let names: Vec<String> = dir.filter_map(|e| e.ok()).filter(|e| e.is_regular_file()).map(|e| e.file_name().to_string()).collect();
+    // Refuse oversized files BEFORE reading them, and stop at a total byte budget, so a stray or
+    // hostile file on the disk cannot run the heap out at boot.
+    let names: Vec<String> = dir
+        .filter_map(|e| e.ok())
+        .filter(|e| e.is_regular_file() && e.file_size() <= ringvm::MAX_PROGRAM_BYTES as u64)
+        .map(|e| e.file_name().to_string())
+        .collect();
+    let mut budget = MAX_GAMES_BYTES;
     for file in names {
         let Some(stem) = file.strip_suffix(".rbc") else { continue };
         let Ok(full) = CString16::try_from(alloc::format!("\\games\\{file}").as_str()) else { continue };
         let path = PathBuf::from(full);
         let Ok(bytes) = fs.read(&path) else { continue };
+        if bytes.len() > budget {
+            break;
+        }
+        budget -= bytes.len();
         if let Ok(program) = ringvm::Program::from_bytes(&bytes) {
             games.push(arcade::Game { name: stem.to_string(), program, size: bytes.len() });
         }
